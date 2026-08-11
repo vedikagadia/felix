@@ -1,0 +1,178 @@
+# CLAUDE.md — felix
+
+Orientation for anyone (or any agent) picking up this project. Read this first.
+
+## What felix is
+
+An **SRE / on-call incident-response agent whose value comes entirely from memory.**
+For an incoming alert it recalls relevant past incidents (by *meaning*, not
+keywords), pulls relevant docs and recent code changes, traces the code graph
+from where the symptom surfaced up to where the cause likely lives, diagnoses,
+and (eventually) writes the resolution back so it gets smarter over time.
+
+Built for the **CockroachDB × AWS "Build with Agentic Memory"** hackathon
+(deadline 2026-08-18). Requirements: use ≥2 CockroachDB tools (we use the
+native VECTOR type + vector indexing, and the Managed MCP Server on the recall
+path) and ≥1 AWS service (Bedrock — Claude for reasoning, Titan for embeddings).
+
+This is a **personal project** on the `vedikagadia` GitHub account. Commit as
+Vedika Gadia / the vedikagadia noreply email. **Never commit under a Salesforce
+identity.**
+
+## The four memory sources (all in one CockroachDB)
+
+| Source | Table(s) | Recall method | Rough share of problems it solves |
+|---|---|---|---|
+| Past incidents (episodic) | `incidents` + `resolution_steps` | vector search | ~50% |
+| Project docs | `doc_chunks` | vector search | ~40% |
+| Recent merges | `code_changes` | vector search **+ time window** | the "what changed?" signal |
+| Code graph (structural) | `code_nodes` + `code_edges` | graph traversal (WITH RECURSIVE) | ~10% (code-only cases) |
+
+Plus `agent_actions` — an audit log of what the agent did.
+
+Recall = run the vector query against incidents + docs + (time-filtered)
+changes, merge by distance in the app. The code graph is *traversed*, not
+vector-searched.
+
+## Repo layout
+
+```
+sql/
+  schema.sql          # the 7 tables; VECTOR(1024) + vector indexes
+  seed_dump.sql       # portable data-only dump (154 rows incl. embeddings), re-loadable
+sample_project/
+  checkout_service/   # the demo target service (Python; no real logic, just a realistic call graph + logs)
+  seed/               # the authored memory corpora (fiction): incidents.json, docs.json, code_changes.json
+  WORLD.md            # AUTHORITATIVE ground truth — every seed conforms to the names/logs/facts here
+src/incidentmemory/
+  parser.py           # AST -> code graph (42 nodes / 22 edges), deterministic uuid5 ids
+  embeddings.py       # embed(); EMBED_PROVIDER = titan | local (bge-large-en-v1.5, both 1024-dim)
+  db.py               # get_conn, insert_*, recall_* (vector), graph_blast_radius / graph_upstream_callers
+  loader.py           # parse + seed + embed + insert -> the integration seam
+  mcp_client.py       # thin client for the CockroachDB Managed MCP Server (recall path; later spike)
+  respond.py          # given an alert, assemble the evidence packet (retrieval half of the loop)
+docs/                 # GITIGNORED, local only — design docs + HTML architecture diagrams (not pushed)
+```
+
+## The two planted puzzles (the heart of the demo)
+
+`WORLD.md` §5 defines two incidents, each solvable by **only one** memory source
+— this is what proves each source pulls its weight:
+
+- **Incident A — "code-only".** Symptom: `db.pool.exhausted` during traffic
+  spikes; looks like a DB capacity problem; scaling the DB doesn't help. True
+  cause: `CheckoutHandler.process` holds a pool connection across
+  `PaymentClient.charge`'s retry loop, so slow gateway retries drain the pool.
+  **No incident/doc/change reveals this** — only the code graph does (trace
+  upstream from `ConnectionPool.acquire`, then read the culprit's source).
+- **Incident B — "merge-only".** Symptom: customers report slow checkout but
+  dashboards are green / no alert fired. True cause: a recent merge changed
+  `metrics.py` `LATENCY_AGGREGATION` from `"p99"` to `"avg"`, hiding tail
+  latency. **Only the `code_changes` record `chg-0001` reveals it** (and it's
+  within the 14-day recall window). Notably `metrics.py` is NOT on the checkout
+  call graph — so a *graph-scoped* change search would miss it; change recall is
+  semantic + temporal, not graph-filtered. (See "design decisions" below.)
+
+## How to run it (local dev)
+
+**We test against a LOCAL single-node CockroachDB**, because the Cloud Basic
+cluster is currently blocked on a 403 (org role/billing). Same wire protocol +
+VECTOR type, so only `DATABASE_URL` changes — no code changes. When the Cloud
+cluster is available, flip `DATABASE_URL` in `.env` and re-run the loader.
+
+```bash
+# 1. start the local node (VECTOR needs cockroach >= ~v24; v26.2.5 verified)
+cockroach start-single-node --insecure --store=./.crdb-data \
+  --listen-addr=localhost:26257 --http-addr=localhost:8080 --background
+cockroach sql --insecure --host=localhost:26257 -e "CREATE DATABASE IF NOT EXISTS felix;"
+
+# 2. python env
+python3 -m venv .venv
+./.venv/bin/pip install -r requirements.txt   # psycopg, python-dotenv, sentence-transformers, boto3, mcp, ...
+
+# 3. config: copy .env.example -> .env, then for local use set:
+#   DATABASE_URL=postgresql://root@localhost:26257/felix?sslmode=disable
+#   EMBED_PROVIDER=local
+
+# 4a. seed from scratch (parses code, embeds ~40 rows, inserts). First run
+#     downloads the ~1.3GB bge-large model.
+./.venv/bin/python -m src.incidentmemory.loader --apply-schema --truncate
+# 4b. OR restore the committed dump instead of re-embedding:
+cockroach sql --insecure --host=localhost:26257 --database=felix -f sql/schema.sql
+cockroach sql --insecure --host=localhost:26257 --database=felix -f sql/seed_dump.sql
+
+# 5. see the retrieval half in action
+./.venv/bin/python -m src.incidentmemory.respond \
+  "checkout failing, db.pool.exhausted during spike" --origin-node ConnectionPool.acquire
+```
+
+- SQL shell: `cockroach sql --insecure --host=localhost:26257 --database=felix`
+  (list columns explicitly — don't `SELECT *`, the `embedding` column is 1024 floats).
+- Web console: http://localhost:8080 (insecure = no login; local only).
+
+## Conventions & gotchas
+
+- **`WORLD.md` is authoritative.** Any new seed data must use only the
+  components / log lines / constants / code-symbol names defined there.
+- **Two naming systems, kept distinct:** logical component names in
+  incidents/docs (`checkout-handler`, `payment-gateway`, `connection-pool`, …)
+  vs. real code-symbol names from the parser (`CheckoutHandler`,
+  `PaymentClient.charge`, `ConnectionPool.acquire`, …). Don't conflate them.
+- **Embeddings are computed at load time, never stored in the repo.** They
+  depend on `EMBED_PROVIDER`; switching providers requires re-seeding
+  (`loader.py --truncate`) so stored vectors match query vectors. `seed_dump.sql`
+  contains the *local*-provider vectors.
+- **`code_nodes.id` is deterministic** (uuid5 of `service:file:kind:qualname`),
+  so re-syncing the graph UPSERTs in place instead of duplicating.
+- **`code_changes.affected_components` is `STRING[]`** (code-node *names*), not
+  resolved to node ids yet — that's a later graph-enrichment pass.
+- **Gitignored / not pushed:** `docs/` (design docs + diagrams), `.env`,
+  `.venv/`, `.crdb-data/` (the raw DB store — 1.3GB incl. a 1GB engine ballast
+  file; use `sql/seed_dump.sql` for a portable snapshot instead).
+- **VECTOR distance operator:** `db.py` uses `<->` (L2). If a cluster's index is
+  built for cosine, switch to `<=>` (noted inline in `db.py`).
+
+## Graph traversal — the direction matters
+
+`code_edges` are directed in the **call direction** (`src` calls `dst`).
+- `graph_blast_radius(name)` walks **downstream** (`src→dst`): "what does this
+  node reach" = impact set. Use when `name` is the suspected *cause*.
+- `graph_upstream_callers(name)` walks **upstream** (`dst→src`): "who reaches
+  this node" = origin trace. Use when `name` is where a *symptom* surfaced and
+  you need to find the real cause up the stack. This is the key primitive for
+  the "the log fired low in the stack but originates elsewhere" case.
+
+## Status (as of this writing)
+
+Done & verified locally (see git branch `phase-1-memory-pipeline`):
+- schema, sample project + WORLD.md, all three seed corpora, parser, embedder,
+  db helpers, loader, respond.
+- End-to-end: seed load, semantic recall for **both** planted incidents,
+  symptom-origin upstream graph trace. `seed_dump.sql` restores clean.
+
+Not yet built / deferred:
+- **The reasoning step** — hand the evidence packet from `respond.py` to a model
+  (Bedrock Claude, or a swappable stand-in) to produce a diagnosis + proposed
+  resolution, then write the outcome back to `incidents`/`agent_actions`. This
+  is the obvious next task.
+- **Bedrock model access** (Claude + Titan) — long-lead, needs the AWS console;
+  until then `EMBED_PROVIDER=local`.
+- **CockroachDB Cloud cluster** — blocked on a 403 (role/billing); local node
+  substitutes. Flip `DATABASE_URL` when resolved.
+- **MCP Server discovery spike** — `mcp_client.py` scaffolding exists; needs a
+  live MCP endpoint to test (auth header / transport may need adjustment).
+- A considered-but-deferred idea: **graph-boosted change ranking** (union +
+  boost changes that touch on-path files, rather than graph-*filtering* them —
+  filtering would break Incident B). See `respond.py` discussion.
+
+## Design decisions worth knowing
+
+- Separate table per memory source (not one unified `memory_chunks`).
+- `resolution_steps` as a child table (not JSONB) so steps are queryable across
+  incidents.
+- Code graph is a **current-state mirror** (deterministic ids, upsert-reconcile
+  on re-sync), not versioned history.
+- Embedder and (eventually) reasoning model are **swappable behind an env var**
+  so DB/agent work isn't blocked on AWS approvals.
+- `active_incidents` (working memory) intentionally omitted until a multi-turn
+  agent loop needs it.
