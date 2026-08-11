@@ -1,0 +1,220 @@
+[
+  {
+    "id": "inc-0001",
+    "title": "Checkout failures during flash-sale traffic spike — db.pool.exhausted",
+    "severity": "SEV1",
+    "service": "connection-pool",
+    "symptoms": "checkout-api alerts fired for elevated 5xx during a flash-sale traffic spike. checkout-handler logs showed repeated `db.pool.exhausted in_use=10 size=10` immediately followed by `checkout.payment_failed order_id=... err=ConnectionPoolExhausted`. Customers reported checkout failures and spinning carts. On-call initially suspected the database itself was undersized for peak load.",
+    "root_cause": "Not fully identified at the time. On-call verified actual connection counts on the database side were well below its real ceiling, ruling out true DB capacity limits, but could not determine why the application-side pool still drained completely under load. Closed as mitigated via pool size increase and load shedding; true root cause was left as 'connection pool sizing marginal for peak traffic' with a follow-up investigation ticket that was never completed.",
+    "tags": ["connection-pool", "db-pool-exhausted", "traffic-spike", "unresolved-root-cause", "checkout"],
+    "occurred_at": "2025-11-03T14:12:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Confirmed the alert signal via checkout-handler logs", "command": "grep 'db.pool.exhausted' checkout-handler.log", "outcome": "Verified repeated db.pool.exhausted in_use=10 size=10 during the traffic spike window"},
+      {"step_order": 2, "action": "Checked database-side connection metrics to rule out real DB capacity limits", "command": null, "outcome": "DB connection count was far below its actual ceiling — database itself was not the bottleneck"},
+      {"step_order": 3, "action": "Increased the application connection pool size as a stopgap", "command": "edit config.py: DB_POOL_SIZE = 20", "outcome": "Reduced frequency of db.pool.exhausted during the remainder of the spike, but did not eliminate it under sustained peak load"},
+      {"step_order": 4, "action": "Enabled request-level load shedding at checkout-api during peak windows", "command": "kubectl apply -f checkout-api-ratelimit.yaml", "outcome": "Reduced customer-visible failure rate by rejecting excess requests early instead of failing deep in checkout-handler"},
+      {"step_order": 5, "action": "Filed a follow-up ticket to investigate why pool exhaustion still occurs at the new, larger pool size under peak load", "command": null, "outcome": "Incident closed as mitigated; follow-up investigation was never completed and the underlying cause remains undetermined"}
+    ]
+  },
+  {
+    "id": "inc-0002",
+    "title": "Customers report slow checkout — latency dashboards green, no alert fired",
+    "severity": "SEV2",
+    "service": "checkout-handler",
+    "symptoms": "Support tickets and Slack reports described checkout 'taking forever' or the spinner hanging, but the checkout latency dashboard (`metrics.latency name=checkout.duration agg=avg`) stayed within normal bounds the entire time and no alert fired. On-call was paged by a manager escalation rather than an alert, checked `api.request` / `api.error` logs and saw no elevated error rate, and confirmed `CheckoutAPI.get_health` returned healthy throughout.",
+    "root_cause": "Unable to reproduce or correlate against any internal signal — every monitored aggregate looked nominal for the entire reported window. Closed as 'could not reproduce — dashboards nominal', with a note for next time to collect specific order_ids from affected customers so individual checkout.start/checkout.success timestamps could be traced directly.",
+    "tags": ["latency", "customer-reported", "dashboards-green", "unresolved", "checkout"],
+    "occurred_at": "2026-08-09T16:40:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Reviewed the checkout latency dashboard for the reported time window", "command": null, "outcome": "Average latency (metrics.latency name=checkout.duration agg=avg) was within normal range — no anomaly visible"},
+      {"step_order": 2, "action": "Spot-checked api.request and api.error logs for the affected time range", "command": "grep 'api.error' checkout-api.log", "outcome": "No elevated error rate or unusual err= values found"},
+      {"step_order": 3, "action": "Checked CheckoutAPI.get_health status over the window", "command": null, "outcome": "Health checks passed continuously; no service-level degradation indicated"},
+      {"step_order": 4, "action": "Requested specific order_ids or timestamps from support to trace individual checkout.start/checkout.success pairs", "command": null, "outcome": "No usable order_ids were provided before the reporting customers churned off the topic"},
+      {"step_order": 5, "action": "Closed the incident as could not reproduce", "command": null, "outcome": "No fix applied; recommendation left to capture order_ids on any future recurrence of this complaint"}
+    ]
+  },
+  {
+    "id": "inc-0003",
+    "title": "payment.retry storm during payment-gateway provider outage",
+    "severity": "SEV1",
+    "service": "payment-gateway",
+    "symptoms": "PagerDuty fired on an elevated `checkout.payment_failed` rate. Logs showed repeated `payment.retry order_id=... attempt=n/8 backoff=...s` climbing through all 8 attempts, followed by `payment.exhausted order_id=... attempts=8` and `checkout.payment_failed order_id=... err=GatewayTimeout`. Customers saw checkout errors and support was flooded with tickets.",
+    "root_cause": "The upstream payment-gateway provider suffered a partial outage, causing `PaymentClient._call_gateway` to exceed `PAYMENT_GATEWAY_TIMEOUT_SECONDS` on a large fraction of calls. `PaymentClient.charge` exhausted all `PAYMENT_MAX_RETRIES` (8) attempts with exponential backoff before giving up, producing the payment.exhausted signal for affected orders.",
+    "tags": ["payment-gateway", "retry-storm", "payment-retry", "gateway-timeout"],
+    "occurred_at": "2025-10-12T09:05:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Confirmed provider-side outage via the gateway status page and correlated GatewayTimeout errors in PaymentClient._call_gateway", "command": null, "outcome": "Root cause identified as an upstream provider issue, not an application bug"},
+      {"step_order": 2, "action": "Communicated the outage status to support so agents could set customer expectations", "command": null, "outcome": "Reduced duplicate ticket volume during the outage"},
+      {"step_order": 3, "action": "Monitored payment.retry and payment.exhausted rates until the provider recovered", "command": null, "outcome": "payment.retry volume dropped back to baseline once the provider status page confirmed resolution"},
+      {"step_order": 4, "action": "Added a dashboard alert on sustained payment.exhausted rate to page on-call faster during future provider-side degradations", "command": null, "outcome": "Future gateway outages of this scale will be detected within minutes instead of via customer tickets"}
+    ]
+  },
+  {
+    "id": "inc-0004",
+    "title": "fulfillment.queue.full — orders backing up during promo traffic",
+    "severity": "SEV2",
+    "service": "fulfillment-queue",
+    "symptoms": "Logs showed `fulfillment.enqueued order_id=... depth=...` climbing steadily throughout a promo push, then `fulfillment.queue.full depth=5000 max=5000` followed by a batch of `checkout.enqueue_failed order_id=... err=QueueFull`. Checkout itself succeeded (payment charged) for these orders but fulfillment enqueue failed.",
+    "root_cause": "fulfillment-worker, the downstream queue consumer, was under-scaled for the promo traffic volume. Its consumption rate fell behind FulfillmentQueue.enqueue's arrival rate, filling the queue to QUEUE_MAX_DEPTH (5000).",
+    "tags": ["fulfillment-queue", "queue-full", "capacity", "promo-traffic"],
+    "occurred_at": "2025-12-05T11:30:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Checked FulfillmentQueue.depth() trend leading up to the incident", "command": null, "outcome": "Confirmed a steady climb to max over ~40 minutes, not a sudden spike — consistent with a capacity mismatch rather than a burst"},
+      {"step_order": 2, "action": "Scaled up the fulfillment-worker deployment", "command": "kubectl scale deployment fulfillment-worker --replicas=12", "outcome": "Consumption rate exceeded arrival rate; queue depth began draining"},
+      {"step_order": 3, "action": "Temporarily raised QUEUE_MAX_DEPTH to give fulfillment-worker headroom to catch up", "command": "edit config.py: QUEUE_MAX_DEPTH = 8000", "outcome": "No further checkout.enqueue_failed errors for the remainder of the promo window"},
+      {"step_order": 4, "action": "Reverted QUEUE_MAX_DEPTH to 5000 after the promo window closed and added a pre-promo fulfillment-worker scaling step to the promo runbook", "command": "edit config.py: QUEUE_MAX_DEPTH = 5000", "outcome": "Queue depth returned to normal baseline; future promos scale fulfillment-worker proactively"}
+    ]
+  },
+  {
+    "id": "inc-0005",
+    "title": "Checkout failures spike after deploy — PAYMENT_MAX_RETRIES misconfigured to 1",
+    "severity": "SEV2",
+    "service": "checkout-handler",
+    "symptoms": "checkout.payment_failed rate jumped immediately after a routine deploy. Logs showed `payment.exhausted order_id=... attempts=1` right after the corresponding `payment.call` line, with no `payment.retry` entries in between. The `config.loaded` log line on the new pods read `payment_max_retries=1` instead of the expected 8.",
+    "root_cause": "The deploy shipped a config.py change that accidentally set PAYMENT_MAX_RETRIES=1 during an unrelated config refactor, so transient gateway blips that would normally succeed on retry now failed checkout immediately.",
+    "tags": ["config-regression", "bad-deploy", "payment-retries", "checkout"],
+    "occurred_at": "2026-01-18T10:02:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Diffed the new config.loaded log output against the previous deploy's baseline", "command": "grep 'config.loaded' checkout-handler.log", "outcome": "Found payment_max_retries=1 instead of the expected 8"},
+      {"step_order": 2, "action": "Reverted the offending deploy", "command": "git revert <deploy-commit> && kubectl rollout restart deployment checkout-handler", "outcome": "PAYMENT_MAX_RETRIES restored to 8; checkout.payment_failed rate returned to baseline within minutes"},
+      {"step_order": 3, "action": "Added a config validation check to the deploy pipeline asserting PAYMENT_MAX_RETRIES stays within an expected 5-10 range", "command": null, "outcome": "Prevents future accidental low-retry deploys from reaching production"}
+    ]
+  },
+  {
+    "id": "inc-0006",
+    "title": "db.pool.exhausted immediately after deploy — DB_POOL_SIZE typo",
+    "severity": "SEV2",
+    "service": "connection-pool",
+    "symptoms": "Within minutes of a config cleanup deploy, `db.pool.exhausted in_use=3 size=3` appeared under completely normal, non-peak traffic. checkout-handler began throwing ConnectionPoolExhausted almost immediately — unlike a load-driven exhaustion, this happened at ordinary traffic levels.",
+    "root_cause": "The deploy's config.py change set DB_POOL_SIZE=3 instead of the intended 10, a fat-fingered edit during an unrelated config cleanup. The undersized pool exhausted under normal load within minutes.",
+    "tags": ["connection-pool", "config-regression", "bad-deploy", "db-pool"],
+    "occurred_at": "2026-02-09T08:47:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Checked the config.loaded log line on freshly deployed pods", "command": "grep 'config.loaded' checkout-handler.log", "outcome": "Confirmed pool_size=3 instead of the expected 10"},
+      {"step_order": 2, "action": "Rolled back the deploy", "command": "kubectl rollout undo deployment checkout-handler", "outcome": "DB_POOL_SIZE restored to 10; db.pool.exhausted stopped immediately"},
+      {"step_order": 3, "action": "Added a CI smoke-test assertion on the config.loaded pool_size value before deploys are allowed to promote", "command": null, "outcome": "Catches config typos of this kind before they reach production"}
+    ]
+  },
+  {
+    "id": "inc-0007",
+    "title": "Checkout API returning TLS errors — ingress certificate expired",
+    "severity": "SEV1",
+    "service": "checkout-api",
+    "symptoms": "`api.error path=/checkout order_id=... err=...` entries showed TLS handshake failures at the load balancer in front of checkout-api; many requests never reached CheckoutAPI.post_checkout at all. An alert fired on the checkout-api 5xx rate as clients failed to connect.",
+    "root_cause": "The TLS certificate for the checkout-api ingress expired; the automated renewal job had failed silently roughly two weeks earlier without alerting anyone.",
+    "tags": ["certificate", "tls", "checkout-api", "expiry"],
+    "occurred_at": "2026-03-14T06:15:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Checked the certificate expiry against the checkout-api ingress endpoint", "command": "openssl s_client -connect checkout-api.internal:443 -servername checkout-api.internal | openssl x509 -noout -dates", "outcome": "Confirmed notAfter was in the past"},
+      {"step_order": 2, "action": "Manually issued and deployed a new certificate", "command": "ccloud cert issue --service checkout-api && kubectl apply -f checkout-api-tls-secret.yaml", "outcome": "TLS handshake errors stopped immediately after rollout"},
+      {"step_order": 3, "action": "Fixed the auto-renewal cronjob and added an alert 14 days before certificate expiry", "command": null, "outcome": "Prevents future silent renewal failures from reaching expiry"}
+    ]
+  },
+  {
+    "id": "inc-0008",
+    "title": "Elevated GatewayTimeout errors from payment-gateway — single-AZ network ACL regression",
+    "severity": "SEV2",
+    "service": "payment-gateway",
+    "symptoms": "A subset of PaymentClient._call_gateway calls began timing out with GatewayTimeout; payment.retry attempts appeared but usually succeeded within a few attempts rather than exhausting. checkout.payment_failed rate rose modestly and was concentrated in requests originating from one availability zone.",
+    "root_cause": "A network team firewall/ACL change the previous day had blocked a subset of outbound traffic from one AZ to the payment-gateway provider's endpoint, causing connection timeouts that PaymentClient surfaced as GatewayTimeout.",
+    "tags": ["payment-gateway", "network", "dependency-timeout", "gateway-timeout"],
+    "occurred_at": "2025-10-29T13:50:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Correlated the geographic distribution of checkout.payment_failed against availability zone", "command": null, "outcome": "Found impact was isolated to a single AZ, not global — pointed away from a provider-wide outage"},
+      {"step_order": 2, "action": "Asked the network team to review recent firewall/ACL changes affecting that AZ", "command": null, "outcome": "Identified an ACL change from the previous day restricting egress to the payment-gateway provider"},
+      {"step_order": 3, "action": "Network team reverted the ACL change", "command": null, "outcome": "GatewayTimeout rate in the affected AZ returned to baseline within minutes"},
+      {"step_order": 4, "action": "Added a synthetic health check exercising payment-gateway connectivity from each AZ", "command": null, "outcome": "Catches future per-AZ connectivity regressions before they affect customer checkouts"}
+    ]
+  },
+  {
+    "id": "inc-0009",
+    "title": "checkout-handler pods evicted — disk full from leftover debug logging",
+    "severity": "SEV2",
+    "service": "checkout-handler",
+    "symptoms": "CheckoutAPI.get_health checks started failing intermittently as checkout-handler pods were evicted. `kubectl describe pod` showed DiskPressure evictions. There was no unusual application-level log signal — the issue was infrastructure-level disk exhaustion, not a code path problem.",
+    "root_cause": "A debug-level logging flag enabled during a prior investigation was never reverted, filling local pod disk with verbose logs over several days until kubelet evicted pods under DiskPressure.",
+    "tags": ["disk", "infra", "checkout-handler", "crash-loop"],
+    "occurred_at": "2026-04-02T02:20:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Checked node conditions for evicted pods", "command": "kubectl describe node <node> | grep DiskPressure", "outcome": "Confirmed DiskPressure-triggered eviction, not an application crash"},
+      {"step_order": 2, "action": "Reverted the logging level and cleared accumulated log files", "command": "kubectl set env deployment/checkout-handler LOG_LEVEL=INFO", "outcome": "Disk usage dropped sharply; pods stopped being evicted"},
+      {"step_order": 3, "action": "Added a log-level revert reminder to the debugging runbook and a disk-usage alert at 80%", "command": null, "outcome": "Prevents future debug-logging leftovers from silently filling disk"}
+    ]
+  },
+  {
+    "id": "inc-0010",
+    "title": "checkout-handler CrashLoopBackOff after deploy — broken import",
+    "severity": "SEV1",
+    "service": "checkout-handler",
+    "symptoms": "Immediately after a deploy, all checkout-handler pods entered CrashLoopBackOff. checkout-api returned 503s for every request, and `api.error path=/checkout` showed connection-refused failures rather than application-level errors, indicating checkout-handler itself was never coming up.",
+    "root_cause": "The deploy included a change to checkout.py with a broken import referencing a module path that didn't exist in the built container image, causing CheckoutHandler's process to fail at startup before it could serve any traffic.",
+    "tags": ["bad-deploy", "crash-loop", "checkout-handler", "rollback"],
+    "occurred_at": "2026-05-20T15:05:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Checked crashed pod logs for the startup failure", "command": "kubectl logs deployment/checkout-handler --previous", "outcome": "Found a Python ImportError in checkout.py at process startup"},
+      {"step_order": 2, "action": "Rolled back the deploy immediately", "command": "kubectl rollout undo deployment checkout-handler", "outcome": "Pods returned to Running; checkout-api 503s stopped within about 2 minutes"},
+      {"step_order": 3, "action": "Fixed the import in a follow-up PR and added a container smoke-test that imports all application modules during the build", "command": null, "outcome": "Prevents future broken-import deploys from reaching production"}
+    ]
+  },
+  {
+    "id": "inc-0011",
+    "title": "fulfillment.queue.full — fulfillment-worker deployment down, zero drain",
+    "severity": "SEV2",
+    "service": "fulfillment-worker",
+    "symptoms": "FulfillmentQueue.depth() climbed steadily with zero drain over roughly an hour, eventually hitting `fulfillment.queue.full depth=5000 max=5000` and triggering `checkout.enqueue_failed` errors. Unlike a normal traffic-driven fill, the enqueue rate itself was unremarkable — nothing was consuming from the queue at all.",
+    "root_cause": "The fulfillment-worker deployment (the downstream queue consumer, external to checkout_service) had crashed and its pods failed to restart due to an unrelated infrastructure issue, so nothing was consuming from the queue while checkout continued enqueueing normally.",
+    "tags": ["fulfillment-worker", "queue-full", "outage", "downstream"],
+    "occurred_at": "2026-06-11T19:22:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Checked fulfillment-worker pod status", "command": "kubectl get pods -l app=fulfillment-worker", "outcome": "Found 0/5 pods Ready"},
+      {"step_order": 2, "action": "Restarted the fulfillment-worker deployment", "command": "kubectl rollout restart deployment fulfillment-worker", "outcome": "Pods came back healthy; queue began draining immediately"},
+      {"step_order": 3, "action": "Monitored FulfillmentQueue.depth() until it returned to near-zero baseline", "command": null, "outcome": "Confirmed full recovery; queue held orders rather than dropping them, so no orders were lost"},
+      {"step_order": 4, "action": "Added a fulfillment-worker liveness alert independent of the queue-depth alert", "command": null, "outcome": "Catches future consumer outages before the queue has a chance to fill"}
+    ]
+  },
+  {
+    "id": "inc-0012",
+    "title": "Intermittent checkout-api 502s — readiness probe too aggressive",
+    "severity": "SEV3",
+    "service": "checkout-api",
+    "symptoms": "A low-grade but persistent trickle of `api.error path=/checkout` entries with connection-reset style failures appeared over several days. CheckoutAPI.get_health passed on every manual check, yet Kubernetes kept cycling pods out of rotation.",
+    "root_cause": "The readiness probe timeout was shorter than CheckoutHandler's occasional slow-path latency, so Kubernetes intermittently marked healthy pods NotReady and cycled them out of rotation mid-request during normal (non-incident-level) latency variance.",
+    "tags": ["readiness-probe", "checkout-api", "kubernetes", "intermittent"],
+    "occurred_at": "2025-11-25T09:10:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Correlated 502 timestamps against pod readiness transition events", "command": "kubectl get events --field-selector reason=Unhealthy", "outcome": "Found readiness probe flapping coincided exactly with the 502 trickle, not application errors"},
+      {"step_order": 2, "action": "Increased the readiness probe timeout and failure threshold", "command": "kubectl patch deployment checkout-api --type=json -p '[{\"op\":\"replace\",\"path\":\"/spec/template/spec/containers/0/readinessProbe/timeoutSeconds\",\"value\":5}]'", "outcome": "Readiness flapping stopped and the 502 trickle disappeared"},
+      {"step_order": 3, "action": "Documented the probe tuning rationale in the on-call runbook", "command": null, "outcome": "Prevents future over-aggressive probe settings from being reintroduced"}
+    ]
+  },
+  {
+    "id": "inc-0013",
+    "title": "payment.retry storm amplified by too-aggressive backoff configuration",
+    "severity": "SEV2",
+    "service": "payment-gateway",
+    "symptoms": "During a minor payment-gateway blip, `payment.retry` volume was far higher than the size of the blip should have caused — retries were hammering the gateway in rapid succession rather than backing off, and `payment.exhausted` counts climbed faster than expected for the underlying issue.",
+    "root_cause": "A prior config change had set PAYMENT_BASE_DELAY_SECONDS too low (0.05s instead of the intended 0.5s), so PaymentClient.charge's exponential backoff barely delayed between attempts, amplifying load on an already-degraded gateway.",
+    "tags": ["payment-retry", "backoff", "config", "retry-storm"],
+    "occurred_at": "2026-02-27T12:35:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Checked config.loaded log values against documented defaults", "command": "grep 'config.loaded' checkout-handler.log", "outcome": "Found PAYMENT_BASE_DELAY_SECONDS=0.05 instead of the intended 0.5"},
+      {"step_order": 2, "action": "Corrected the backoff base delay", "command": "edit config.py: PAYMENT_BASE_DELAY_SECONDS = 0.5", "outcome": "Restored proper exponential backoff spacing between retry attempts"},
+      {"step_order": 3, "action": "Redeployed checkout-handler with the corrected config", "command": "kubectl rollout restart deployment checkout-handler", "outcome": "Retry volume against the gateway dropped to levels appropriate for the blip's actual severity"}
+    ]
+  },
+  {
+    "id": "inc-0014",
+    "title": "Payment failure spike went unpaged — alert threshold set too high",
+    "severity": "SEV3",
+    "service": "checkout-handler",
+    "symptoms": "A moderate, sustained increase in `checkout.payment_failed` rate persisted for over an hour with no page. It was found only through a manual dashboard review; the configured alert threshold for that metric had been set for a much larger-scale incident and never revisited.",
+    "root_cause": "The alert threshold for checkout.payment_failed rate was originally configured for a much larger incident scale and never revisited as normal traffic grew; a real, moderate-severity payment issue stayed under threshold for its entire duration.",
+    "tags": ["alerting-gap", "observability", "payment-failed", "threshold"],
+    "occurred_at": "2026-06-30T17:48:00Z",
+    "resolution_steps": [
+      {"step_order": 1, "action": "Reviewed historical checkout.payment_failed rate distribution to pick a realistic alert threshold", "command": null, "outcome": "Determined the existing threshold was roughly 10x higher than any real moderate incident would reach"},
+      {"step_order": 2, "action": "Lowered the alert threshold and added an intermediate warning-level tier", "command": null, "outcome": "Future incidents of this scale will page on-call instead of requiring manual dashboard discovery"},
+      {"step_order": 3, "action": "Backfilled a retroactive review of the missed window", "command": null, "outcome": "Confirmed the underlying payment issue had self-resolved and no further remediation was needed for that specific occurrence"}
+    ]
+  }
+]
