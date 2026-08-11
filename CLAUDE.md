@@ -44,13 +44,21 @@ sample_project/
   checkout_service/   # the demo target service (Python; no real logic, just a realistic call graph + logs)
   seed/               # the authored memory corpora (fiction): incidents.json, docs.json, code_changes.json
   WORLD.md            # AUTHORITATIVE ground truth — every seed conforms to the names/logs/facts here
-src/incidentmemory/
-  parser.py           # AST -> code graph (42 nodes / 22 edges), deterministic uuid5 ids
-  embeddings.py       # embed(); EMBED_PROVIDER = titan | local (bge-large-en-v1.5, both 1024-dim)
-  db.py               # get_conn, insert_*, recall_* (vector), graph_blast_radius / graph_upstream_callers
-  loader.py           # parse + seed + embed + insert -> the integration seam
-  mcp_client.py       # thin client for the CockroachDB Managed MCP Server (recall path; later spike)
-  respond.py          # given an alert, assemble the evidence packet (retrieval half of the loop)
+src/                  # layered: cli/api -> service -> clients/store -> models/config
+  config.py           # Settings dataclass (reads .env once); swap env files, not code
+  models.py           # domain dataclasses: Incident, DocChunk, CodeChange, CodeNode, GraphHit, Recall[T], EvidencePacket, Diagnosis
+  cli.py / __main__.py# `python -m src {respond,seed,parse}` entry point
+  clients/
+    embedder/         # Embedder ABC + get_embedder(); titan.py (Bedrock), local.py (bge-large-en-v1.5). Both 1024-dim
+    cockroach_mcp.py  # thin client for the CockroachDB Managed MCP Server (recall path; later spike)
+  store/
+    connection.py     # get_conn, apply_schema, vec_literal (VECTOR param helper)
+    repositories/     # one per source: incidents, docs, changes, graph (blast_radius/upstream_callers), actions. Return domain models
+  service/
+    retriever.py      # Retriever(conn, embedder) -> EvidencePacket (retrieval half of the loop)
+  seed/
+    parser.py         # AST -> code graph (42 nodes / 22 edges), deterministic uuid5 ids
+    loader.py         # Seeder: parse + embed + insert -> the integration seam
 docs/                 # GITIGNORED, local only — design docs + HTML architecture diagrams (not pushed)
 ```
 
@@ -96,13 +104,13 @@ python3 -m venv .venv
 
 # 4a. seed from scratch (parses code, embeds ~40 rows, inserts). First run
 #     downloads the ~1.3GB bge-large model.
-./.venv/bin/python -m src.incidentmemory.loader --apply-schema --truncate
+./.venv/bin/python -m src seed --apply-schema --truncate
 # 4b. OR restore the committed dump instead of re-embedding:
 cockroach sql --insecure --host=localhost:26257 --database=felix -f sql/schema.sql
 cockroach sql --insecure --host=localhost:26257 --database=felix -f sql/seed_dump.sql
 
 # 5. see the retrieval half in action
-./.venv/bin/python -m src.incidentmemory.respond \
+./.venv/bin/python -m src respond \
   "checkout failing, db.pool.exhausted during spike" --origin-node ConnectionPool.acquire
 ```
 

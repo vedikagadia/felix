@@ -1,32 +1,31 @@
 """Thin client for the CockroachDB Managed MCP Server.
 
-Scaffolding for the discovery spike (spikes/03_mcp.py) that confirms what
-tools the Managed MCP Server exposes and how vector recall gets routed
-through it (see docs/ARCHITECTURE.md, "The dual-path decision"). Nothing here
+Scaffolding for the discovery spike that confirms what tools the Managed MCP
+Server exposes and how vector recall gets routed through it. Nothing here
 connects at import time — connect()/list_tools()/call_tool() are the only
-functions that touch the network, so `import incidentmemory.mcp_client` is
-always safe without CRDB_MCP_URL / CRDB_MCP_API_KEY set.
+functions that touch the network, so importing this module is always safe
+without CRDB_MCP_URL / CRDB_MCP_API_KEY set.
 
-Auth: the Cloud Console's MCP config snippet for CockroachDB typically wants
-the API key sent as a bearer token (Authorization: Bearer <key>) over the
-Streamable HTTP transport. That's what's wired up below.
+Auth: the Cloud Console's MCP config snippet for CockroachDB typically wants the
+API key sent as a bearer token (Authorization: Bearer <key>) over the Streamable
+HTTP transport. That's what's wired up below.
 
-  NOTE: the exact auth header shape (Authorization: Bearer vs. a custom
-  header like X-Cockroach-Api-Key) and the transport (streamable HTTP vs.
-  SSE) are asserted here from the Cloud Console docs, not yet verified
-  against a live endpoint — this is the single line most likely to need
-  adjustment once CRDB_MCP_URL/CRDB_MCP_API_KEY are live. See connect() below.
+  NOTE: the exact auth header shape (Authorization: Bearer vs. a custom header
+  like X-Cockroach-Api-Key) and the transport (streamable HTTP vs. SSE) are
+  asserted here from the Cloud Console docs, not yet verified against a live
+  endpoint — the single line most likely to need adjustment once the MCP URL /
+  API key are live. See connect() below.
 """
 
 from __future__ import annotations
 
-import os
 from contextlib import asynccontextmanager
 from typing import Any
 
-from dotenv import load_dotenv
 from mcp import ClientSession
 from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
+
+from ..config import get_settings
 
 
 @asynccontextmanager
@@ -39,16 +38,21 @@ async def connect():
 
     Yields an initialized ClientSession.
     """
-    load_dotenv()
-    url = os.environ["CRDB_MCP_URL"]
-    api_key = os.environ["CRDB_MCP_API_KEY"]
+    settings = get_settings()
+    if not settings.crdb_mcp_url or not settings.crdb_mcp_api_key:
+        raise RuntimeError("CRDB_MCP_URL and CRDB_MCP_API_KEY must be set to connect to the MCP server")
 
     # NOTE: adjust this header if the Cloud Console's MCP config snippet specifies
     # a different auth scheme (e.g. a custom "X-Cockroach-Api-Key" header) — Bearer
     # is the common convention but hasn't been confirmed against the live endpoint.
-    http_client = create_mcp_http_client(headers={"Authorization": f"Bearer {api_key}"})
+    http_client = create_mcp_http_client(
+        headers={"Authorization": f"Bearer {settings.crdb_mcp_api_key}"}
+    )
 
-    async with streamable_http_client(url, http_client=http_client) as (read_stream, write_stream):
+    async with streamable_http_client(settings.crdb_mcp_url, http_client=http_client) as (
+        read_stream,
+        write_stream,
+    ):
         async with ClientSession(read_stream, write_stream) as session:
             await session.initialize()
             yield session

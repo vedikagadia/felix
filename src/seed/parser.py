@@ -1,12 +1,12 @@
 """AST-based parser that turns the `checkout_service` sample project into a code graph.
 
 Walks every `.py` file in `sample_project/checkout_service/`, and for each module,
-class, and function/method emits a `code_nodes` row (per `sql/schema.sql`) plus
-best-effort `code_edges` rows for `imports` and `calls` relationships.
+class, and function/method emits a `code_nodes`-shaped dict (per `sql/schema.sql`)
+plus best-effort `code_edges` dicts for `imports` and `calls` relationships.
 
-Stdlib only (`ast`, `uuid`, `os`, `pathlib`). Pure parse — no DB connection, no
-embedding, no network calls. Designed to be imported by a loader later via
-`parse_project()`; running this file directly prints a human-readable summary.
+Stdlib only (`ast`, `uuid`, `pathlib`). Pure parse — no DB connection, no
+embedding, no network calls. Imported by the loader via `parse_project()`;
+running this file directly prints a human-readable summary.
 """
 
 from __future__ import annotations
