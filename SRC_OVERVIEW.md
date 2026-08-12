@@ -9,16 +9,18 @@ see `CLAUDE.md`.
 `src/` is a **strictly layered** codebase. Dependencies point one direction only:
 
 ```
-cli.py  ──▶  service/  ──▶  store/repositories/  ──▶  store/connection.py
-  │             │                   │                      │
-  │             └──▶ clients/       └──▶ models.py ◀────────┘
+cli.py   ──▶  service/  ──▶  store/repositories/  ──▶  store/connection.py
+api/     ──▶     │                   │                      │
+  │              └──▶ clients/       └──▶ models.py ◀────────┘
   └──▶ seed/          (embedder, llm, mcp)         config.py (read by all)
 ```
 
 The core job: for an incoming alert, **recall** relevant memory from CockroachDB
 (four sources), optionally **trace the code graph**, then **reason** over it with
 an LLM and **write the diagnosis back**. Two halves — *retrieval* (deterministic)
-and *reasoning* (the LLM) — are kept cleanly separated.
+and *reasoning* (the LLM) — are kept cleanly separated. `cli.py` and `api/` are
+two **thin drivers** over the same service layer; no business logic lives in
+either.
 
 ## Layer by layer
 
@@ -38,7 +40,10 @@ repository layer. Key ones:
 - `GraphHit` — a `CodeNode` + the shallowest **hop depth** it was reached at.
 - `EvidencePacket` — everything retrieval gathers for one alert (the input to
   reasoning).
-- `Diagnosis` / `LLMResult` — the reasoning layer's output.
+- `Diagnosis` — the reasoning layer's output; `DiagnosisResult` bundles a
+  `Diagnosis` with the `EvidencePacket` it was reasoned over (so one gather
+  serves both the diagnosis and the evidence display). `LLMResult` wraps one LLM
+  completion.
 
 ### `store/` — persistence
 - **`connection.py`**: `get_conn()` (autocommit psycopg3 connection) and the
@@ -76,12 +81,14 @@ Every client imports its heavy SDK *inside* a method, never at module import —
 importing the package is always safe without AWS/Gemini/MCP configured.
 
 ### `service/` — the orchestration
-- **`retriever.py`**: `Retriever.gather()` — the *retrieval half*. Embeds the
-  alert once, then fans out to all four repositories, assembling an
+- **`evidence_gatherer.py`**: `EvidenceGatherer.gather()` — the *retrieval half*.
+  Embeds the alert once, then fans out to all four repositories, assembling an
   `EvidencePacket`. Fully deterministic; stops before the LLM.
-- **`responder.py`**: `IncidentResponder.diagnose()` — the *reasoning half*, a
-  7-step loop:
-  1. recall (via retriever)
+- **`diagnoser.py`**: `IncidentDiagnoser` — the *reasoning half*. Its `respond()`
+  runs a 7-step loop and returns a `DiagnosisResult` (diagnosis + the packet it
+  reasoned over); `diagnose()` is a back-compat wrapper returning just the
+  `Diagnosis`. The loop:
+  1. recall (via the gatherer)
   2. **origin-node resolution** (if caller didn't pin one, mine
      code-symbol-shaped tokens from the top *close-match* incident/doc and
      resolve to a real node, then run the upstream trace)
@@ -92,13 +99,29 @@ importing the package is always safe without AWS/Gemini/MCP configured.
      in the packet)
   6. **atomic write-back** (minimal incident + resolution_steps + audit row, all
      in one transaction)
-  7. return
+  7. return the `DiagnosisResult`
+
+### `api/` — HTTP driver (FastAPI)
+A thin adapter over the service layer, parallel to the CLI — no business logic.
+- **`app.py`**: `create_app()` builds the FastAPI app with permissive CORS and a
+  per-request connection dependency (`db_conn`). Routes are declared `def` (not
+  `async def`) so FastAPI runs the blocking psycopg/LLM calls in a threadpool.
+  Endpoints: `POST /chat` → `{diagnosis, evidence}` (full loop via
+  `IncidentDiagnoser.respond`), `POST /recall` → `{evidence}` (retrieval only,
+  the `--no-llm` equivalent), `GET /health`. `/chat` returns 503 if the LLM isn't
+  configured.
+- **`schemas.py`**: serializes domain models to the JSON contract in
+  `frontend/src/api/types.ts` (recalls → `{item, distance}`, graph hits →
+  `{node, depth}`, datetimes → ISO strings).
+
+Run it with `python -m src serve [--reload]` (see `cli.py`).
 
 ### `cli.py` / `__main__.py` — entry point
-`python -m src {respond,seed,parse,mcp-probe}`. `respond` prints the evidence
-packet as blocks [1]–[4], then the diagnosis as [5] (`--no-llm` stops at [4], no
-DB writes). Wires the connection, retriever, repositories, and responder
-together.
+`python -m src {respond,seed,parse,mcp-probe,serve}`. `respond` prints the
+evidence packet as blocks [1]–[4], then the diagnosis as [5] (`--no-llm` stops at
+[4], no DB writes); the LLM path calls `respond()` so a single gather serves both
+blocks. `serve` launches the HTTP API. Wires the connection, gatherer,
+repositories, and diagnoser together.
 
 ### `seed/` — populating memory
 - **`parser.py`**: pure-stdlib AST walker turning the
@@ -114,12 +137,10 @@ together.
 
 - **Two id worlds don't fully connect.** Recall exposes UUIDs
   (`uuid5("inc-0001")`), and nothing in the retrieval layer maps them back to the
-  human `inc-0001`. `responder.py` documents this at length (lines 189–203): it
-  cites the UUID because that's what's verbatim in the packet. A human-id
-  passthrough is the noted follow-up.
-- **`respond` block [4]'s footer text is stale** — `_print_packet` still prints
-  "NEXT (not yet built): hand this packet to the reasoning model…" (cli.py:60),
-  but the reasoning step *is* built now and prints right after as [5]. Minor
-  cosmetic mismatch.
+  human `inc-0001`. `diagnoser.py` documents this at length (the
+  `_build_prompt` citation-id note): it cites the UUID because that's what's
+  verbatim in the packet. A human-id passthrough is the noted follow-up.
+- **The frontend and API share one contract.** `frontend/src/api/types.ts`
+  mirrors `models.py`; `api/schemas.py` produces exactly that shape. Change one,
+  change all three.
 </content>
-</invoke>

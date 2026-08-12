@@ -17,6 +17,10 @@ python-dotenv>=1.0
 typer>=0.12
 rich>=13.7
 
+# HTTP API (python -m src serve) — the frontend's backend
+fastapi>=0.110
+uvicorn[standard]>=0.29
+
 # MCP client (for the recall path) — pin verified in the spike
 mcp>=1.0
 

@@ -55,8 +55,8 @@ sample_project/
   WORLD.md            # AUTHORITATIVE ground truth — every seed conforms to the names/logs/facts here
 src/                  # layered: cli/api -> service -> clients/store -> models/config
   config.py           # Settings dataclass (reads .env once); swap env files, not code
-  models.py           # domain dataclasses: Incident, DocChunk, CodeChange, CodeNode, GraphHit, Recall[T], EvidencePacket, Diagnosis
-  cli.py / __main__.py# `python -m src {respond,seed,parse}` entry point
+  models.py           # domain dataclasses: Incident, DocChunk, CodeChange, CodeNode, GraphHit, Recall[T], EvidencePacket, Diagnosis, DiagnosisResult
+  cli.py / __main__.py# `python -m src {respond,seed,parse,mcp-probe,serve}` entry point
   clients/
     embedder/         # Embedder ABC + get_embedder(); titan.py (Bedrock), local.py (bge-large-en-v1.5). Both 1024-dim
     cockroach_mcp.py  # thin client for the CockroachDB Managed MCP Server (recall path; later spike)
@@ -64,11 +64,14 @@ src/                  # layered: cli/api -> service -> clients/store -> models/c
     connection.py     # get_conn, apply_schema, vec_literal (VECTOR param helper)
     repositories/     # one per source: incidents, docs, changes, graph (blast_radius/upstream_callers), actions. Return domain models
   service/
-    retriever.py      # Retriever(conn, embedder) -> EvidencePacket (retrieval half of the loop)
+    evidence_gatherer.py # EvidenceGatherer(conn, embedder) -> EvidencePacket (retrieval half of the loop)
+    diagnoser.py      # IncidentDiagnoser: respond() -> DiagnosisResult (reason + write-back); diagnose() returns just the Diagnosis
+  api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /recall, /health), schemas.py (serialize to the frontend contract)
   seed/
     parser.py         # AST -> code graph (42 nodes / 22 edges), deterministic uuid5 ids
     loader.py         # Seeder: parse + embed + insert -> the integration seam
 docs/                 # GITIGNORED, local only — design docs + HTML architecture diagrams (not pushed)
+frontend/             # React + Vite + TS chat UI (talks to src/api via POST /chat); mock mode when VITE_API_URL unset
 ```
 
 ## The two planted puzzles (the heart of the demo)
@@ -178,12 +181,23 @@ Done & verified locally:
   symptom-origin upstream graph trace. `seed_dump.sql` restores clean.
 - **The reasoning step** (branch `llm-reasoning-layer`) — `clients/llm`
   (LLMClient ABC + `get_llm()`; Gemini default, Bedrock/Claude swappable) and
-  `service/responder.py` (`IncidentResponder.diagnose`): recall → Option-B
-  origin resolution → prompt → LLM → defensive parse + citation-integrity guard
-  → atomic write-back (one transaction: minimal incident + resolution_steps +
-  agent_actions). Both planted puzzles diagnose correctly end-to-end with live
+  `service/diagnoser.py` (`IncidentDiagnoser.respond` / `.diagnose`): recall →
+  Option-B origin resolution → prompt → LLM → defensive parse + citation-integrity
+  guard → atomic write-back (one transaction: minimal incident + resolution_steps
+  + agent_actions). Both planted puzzles diagnose correctly end-to-end with live
   Gemini; verified by a 4-reviewer adversarial pass (diagnosis stability,
   negative control, citation integrity, `--no-llm` no-writes, no-orphan-rows).
+- **The HTTP API** (`src/api/`, FastAPI) — a second thin driver over the service
+  layer alongside the CLI. `python -m src serve` exposes `POST /chat` →
+  `{diagnosis, evidence}`, `POST /recall` → `{evidence}` (retrieval only), and
+  `GET /health`. Serializes to the contract in `frontend/src/api/types.ts`.
+  Byte-compiles clean; not yet run end-to-end against a live node (needs the
+  running stack). Requires `fastapi` + `uvicorn` (now in requirements.txt).
+- **The frontend** (`frontend/`, React + Vite + TypeScript) — a chat UI: alert →
+  diagnosis, with an evidence panel showing recalled incidents/docs/changes + the
+  upstream trace. Runs in mock mode with no backend; set `VITE_API_URL` (a
+  `.env.local` pointing at `http://localhost:8000` is committed) to hit the API.
+  `npm run build` + typecheck pass.
 
 Not yet built / deferred:
 - **Bedrock model access** (Claude + Titan) — long-lead, needs the AWS console;

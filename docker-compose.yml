@@ -1,0 +1,56 @@
+# Local CockroachDB for felix — one command to a seeded, persistent single node.
+#
+#   docker compose up -d     # start the node, then auto-create + seed the felix DB
+#   docker compose logs -f crdb-init   # watch the schema/seed step
+#   docker compose down      # stop the node (DATA PERSISTS in the named volume)
+#   docker compose down -v   # stop AND wipe the data volume (fully fresh start)
+#
+# After `up`, point the app at it (this is already the default in .env / .env.example):
+#   DATABASE_URL=postgresql://root@localhost:26257/felix?sslmode=disable
+#
+#   SQL:         localhost:26257
+#   Web console: http://localhost:8080   (insecure = no login; local only)
+#
+# CockroachDB ships as an official image, so the DB itself needs no custom
+# Dockerfile — this compose file pins the version, mounts a persistent named
+# volume, and runs docker/init-db.sh once to create + seed the felix database.
+# Bump the image tag to match your local `cockroach` binary if needed
+# (v26.2.5 is the version verified for felix; the VECTOR type needs >= ~v24.3).
+
+services:
+  crdb:
+    image: cockroachdb/cockroach:v26.2.5
+    container_name: felix-crdb
+    command: start-single-node --insecure --advertise-addr=crdb
+    ports:
+      - "26257:26257"   # SQL wire protocol (psycopg / cockroach sql)
+      - "8080:8080"     # DB web console
+    volumes:
+      - crdb-data:/cockroach/cockroach-data   # persistence lives here
+    healthcheck:
+      test: ["CMD", "cockroach", "sql", "--insecure", "--host=localhost:26257", "-e", "SELECT 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+    restart: unless-stopped
+
+  # One-shot: waits for the node to be healthy, then creates the felix DB,
+  # applies sql/schema.sql, and seeds sql/seed_dump.sql (only if empty).
+  # Exits 0 when finished — safe to leave in the file; re-runs are idempotent.
+  crdb-init:
+    image: cockroachdb/cockroach:v26.2.5
+    container_name: felix-crdb-init
+    depends_on:
+      crdb:
+        condition: service_healthy
+    environment:
+      CRDB_HOST: crdb:26257
+    volumes:
+      - ./sql:/sql:ro
+      - ./docker/init-db.sh:/init-db.sh:ro
+    entrypoint: ["/bin/sh", "/init-db.sh"]
+    restart: "no"
+
+volumes:
+  crdb-data:
