@@ -121,11 +121,21 @@ cockroach sql --insecure --host=localhost:26257 --database=felix -f sql/seed_dum
 # 5. see the retrieval half in action
 ./.venv/bin/python -m src respond \
   "checkout failing, db.pool.exhausted during spike" --origin-node ConnectionPool.acquire
+
+# 6. run the tests
+./.venv/bin/python -m pytest              # deterministic: parsing + write-back. No API key/network.
+./.venv/bin/python -m pytest -m live      # + the two planted-puzzle QUALITY checks (real Gemini + DB)
 ```
 
 - SQL shell: `cockroach sql --insecure --host=localhost:26257 --database=felix`
   (list columns explicitly — don't `SELECT *`, the `embedding` column is 1024 floats).
 - Web console: http://localhost:8080 (insecure = no login; local only).
+- **Tests** (`tests/`): `test_parsing.py` (JSON extraction, citation-integrity
+  guard, confidence clamp, step-shape coercion — no DB/network), `test_writeback.py`
+  (FakeLLM + local DB; atomic write-back + no-orphan-on-failure, each test rolls
+  back so the seed is untouched), `test_puzzles.py` (`-m live` only — diagnosis
+  quality against the real model; a FakeLLM can't judge quality). The default
+  run skips `live` and needs no API key. See `tests/conftest.py` for `FakeLLM`.
 
 ## Conventions & gotchas
 

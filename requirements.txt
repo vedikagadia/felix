@@ -19,3 +19,6 @@ rich>=13.7
 
 # MCP client (for the recall path) — pin verified in the spike
 mcp>=1.0
+
+# Tests
+pytest>=8.0
