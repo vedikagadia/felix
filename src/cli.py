@@ -56,10 +56,6 @@ def _print_packet(packet: EvidencePacket) -> None:
         for hit in packet.upstream:
             print(f"  depth {hit.depth}  {hit.node.name:28} {hit.node.file}")
 
-    print("\n" + "-" * 72)
-    print("NEXT (not yet built): hand this packet to the reasoning model for a")
-    print("diagnosis + proposed resolution, then write the outcome back to memory.")
-
 
 def _print_diagnosis(diagnosis: Diagnosis) -> None:
     print("\n[5] DIAGNOSIS")
@@ -83,6 +79,8 @@ def _cmd_respond(args: argparse.Namespace) -> None:
         _print_packet(packet)
 
         if args.no_llm:
+            print("\n" + "-" * 72)
+            print("(--no-llm: stopped at the evidence packet; no diagnosis, no DB writes)")
             return
 
         settings = get_settings()

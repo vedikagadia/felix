@@ -8,6 +8,12 @@ cites the right ids — not exact strings.
 Marked `live` and skipped by default. Run explicitly with:
     ./.venv/bin/python -m pytest -m live
 
+These double as a visible demo: each test prints the alert, the evidence packet
+it recalled (incidents / docs / changes / trace), and the diagnosis. pytest
+CAPTURES stdout and only shows it when a test FAILS — so to watch a PASSING run,
+add -s:
+    ./.venv/bin/python -m pytest -m live -s
+
 Requires: local CockroachDB seeded + GEMINI_API_KEY set (or LLM_PROVIDER
 pointing at a reachable provider). Each run writes one incident; the module
 cleans up its null-embedding rows in teardown.
@@ -20,6 +26,20 @@ import pytest
 from src.config import get_settings
 
 pytestmark = pytest.mark.live
+
+
+def _run_and_show(diagnoser, alert: str, origin_node: str | None = None):
+    """Gather + print the evidence packet, diagnose + print the result, then
+    return the Diagnosis. Reuses the CLI's formatters so the demo output matches
+    `python -m src respond`. (The packet is gathered here for display; diagnose()
+    re-gathers internally — a negligible second embed for a 3-test demo.)"""
+    from src.cli import _print_diagnosis, _print_packet
+
+    packet = diagnoser.gatherer.gather(alert, origin_node=origin_node)
+    _print_packet(packet)
+    diagnosis = diagnoser.diagnose(alert, origin_node=origin_node)
+    _print_diagnosis(diagnosis)
+    return diagnosis
 
 
 @pytest.fixture(scope="module")
@@ -54,7 +74,8 @@ def diagnoser():
 def test_puzzle_a_code_only(diagnoser):
     """Symptom looks like a DB capacity issue; the true cause is only visible
     from the code graph (connection held across the payment retry loop)."""
-    d = diagnoser.diagnose(
+    d = _run_and_show(
+        diagnoser,
         "checkout requests failing during flash sale, db.pool.exhausted, database capacity looks fine",
         origin_node="ConnectionPool.acquire",
     )
@@ -68,8 +89,9 @@ def test_puzzle_a_code_only(diagnoser):
 def test_puzzle_b_merge_only(diagnoser):
     """Dashboards green, no alert — solvable only via the recent code change
     that switched LATENCY_AGGREGATION p99 -> avg. No origin_node given."""
-    d = diagnoser.diagnose(
-        "customers say checkout is slow but the latency dashboard is green and no alert fired"
+    d = _run_and_show(
+        diagnoser,
+        "customers say checkout is slow but the latency dashboard is green and no alert fired",
     )
     assert d.root_cause is not None
     rc = d.root_cause.lower()
@@ -81,7 +103,7 @@ def test_puzzle_b_merge_only(diagnoser):
 def test_negative_control_no_hallucination(diagnoser):
     """An unrelated alert must NOT produce a confident checkout root cause or
     cite unrelated ids."""
-    d = diagnoser.diagnose("the office wifi is down")
+    d = _run_and_show(diagnoser, "the office wifi is down")
     # Either no root cause, or at least no fabricated checkout citations.
     assert not d.cited_change_ids
     if d.root_cause is not None:
