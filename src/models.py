@@ -4,7 +4,7 @@ Repositories return these dataclasses instead of raw DB tuples, so the service
 and CLI layers never index into positional rows (`r[6]`) and never care about
 column order. Each memory source has a model; recall results wrap a model with
 its vector distance (`Recall`), and the graph wrapper adds a traversal depth
-(`GraphHit`). `EvidencePacket` is everything the retriever assembles for one
+(`GraphHit`). `EvidencePacket` is everything the evidence gatherer assembles for one
 alert; `Diagnosis` is what the reasoning layer will produce from it (step 2).
 """
 
@@ -109,7 +109,7 @@ class GraphHit:
 
 @dataclass
 class EvidencePacket:
-    """Everything the retriever gathers for one alert — the input the reasoning
+    """Everything the evidence gatherer collects for one alert — the input the reasoning
     layer will diagnose over."""
 
     alert: str

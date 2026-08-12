@@ -9,7 +9,7 @@
 
 `respond` assembles the evidence packet felix reasons over (the retrieval half
 of the agent loop — everything BEFORE the LLM), prints it, then hands it to the
-LLM reasoning step (IncidentResponder.diagnose) for a diagnosis + proposed
+LLM reasoning step (IncidentDiagnoser.diagnose) for a diagnosis + proposed
 resolution, printed as block [5]. `--no-llm` stops after the evidence packet
 (today's original behavior) and makes no DB writes.
 """
@@ -22,7 +22,7 @@ from .config import get_settings
 from .models import Diagnosis, EvidencePacket
 from .seed import loader
 from .seed.parser import SERVICE_NAME, parse_project
-from .service.retriever import Retriever
+from .service.evidence_gatherer import EvidenceGatherer
 from .store.connection import get_conn
 
 
@@ -78,8 +78,8 @@ def _print_diagnosis(diagnosis: Diagnosis) -> None:
 def _cmd_respond(args: argparse.Namespace) -> None:
     conn = get_conn()
     try:
-        retriever = Retriever(conn)
-        packet = retriever.gather(args.alert, origin_node=args.origin_node, k=args.k)
+        gatherer = EvidenceGatherer(conn)
+        packet = gatherer.gather(args.alert, origin_node=args.origin_node, k=args.k)
         _print_packet(packet)
 
         if args.no_llm:
@@ -92,14 +92,14 @@ def _cmd_respond(args: argparse.Namespace) -> None:
             return
 
         from .clients.llm import get_llm
-        from .service.responder import IncidentResponder
+        from .service.diagnoser import IncidentDiagnoser
         from .store.repositories import ActionRepository, IncidentRepository
 
         llm = get_llm()
         incident_repo = IncidentRepository(conn)
         action_repo = ActionRepository(conn)
-        responder = IncidentResponder(retriever, llm, incident_repo, action_repo)
-        diagnosis = responder.diagnose(args.alert, origin_node=args.origin_node)
+        diagnoser = IncidentDiagnoser(gatherer, llm, incident_repo, action_repo)
+        diagnosis = diagnoser.diagnose(args.alert, origin_node=args.origin_node)
         _print_diagnosis(diagnosis)
     finally:
         conn.close()
