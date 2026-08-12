@@ -25,3 +25,6 @@ docs/
 
 # Orchestration scratch (build contracts, agent notes — local only)
 .orchestration/
+
+# Scratch test-run captures
+live-test-output.txt

@@ -1,4 +1,4 @@
-"""Retriever — assemble the evidence felix reasons over for one alert.
+"""EvidenceGatherer — assemble the evidence felix reasons over for one alert.
 
 The retrieval half of the agent loop, everything BEFORE the LLM. Given an alert
 string it embeds the text once and gathers, into an EvidencePacket:
@@ -9,7 +9,7 @@ string it embeds the text once and gathers, into an EvidencePacket:
      originates, to find who up the call stack could be the real cause.
 
 The reasoning step (hand the packet to the LLM for a Diagnosis) lives in
-responder.py (step 2); the Retriever stops at the packet.
+diagnoser.py (step 2); the EvidenceGatherer stops at the packet.
 """
 
 from __future__ import annotations
@@ -21,7 +21,7 @@ from ..models import EvidencePacket
 from ..store.repositories import ChangeRepository, DocRepository, GraphRepository, IncidentRepository
 
 
-class Retriever:
+class EvidenceGatherer:
     def __init__(self, conn: psycopg.Connection, embedder: Embedder | None = None):
         self.conn = conn
         self.embedder = embedder or get_embedder()

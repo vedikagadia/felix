@@ -1,14 +1,14 @@
-"""IncidentResponder — the reasoning half of the agent loop (step 2).
+"""IncidentDiagnoser — the reasoning half of the agent loop (step 2).
 
-`retriever.py` gathers an `EvidencePacket` (deterministic retrieval); this
-module hands that packet to an `LLMClient` for a `Diagnosis`, then writes the
-diagnosis back to memory (a minimal `incidents` row + its `resolution_steps` +
-one `agent_actions` audit row). Retrieval stays deterministic — the LLM only
+`evidence_gatherer.py` gathers an `EvidencePacket` (deterministic retrieval);
+this module hands that packet to an `LLMClient` for a `Diagnosis`, then writes
+the diagnosis back to memory (a minimal `incidents` row + its `resolution_steps`
++ one `agent_actions` audit row). Retrieval stays deterministic — the LLM only
 reasons over exactly what it's handed, and only ids that are verbatim in that
 context are allowed to survive as citations.
 
 Talks to the DB only through the repositories it's given (or exposed by the
-retriever) — no raw SQL, no connection of its own.
+evidence gatherer) — no raw SQL, no connection of its own.
 """
 
 from __future__ import annotations
@@ -20,7 +20,7 @@ from typing import Any
 from ..clients.llm import LLMClient
 from ..models import Diagnosis, EvidencePacket, ResolutionStep
 from ..store.repositories import ActionRepository, IncidentRepository
-from .retriever import Retriever
+from .evidence_gatherer import EvidenceGatherer
 
 # Below this L2 distance, the top recalled incident/doc is considered "close
 # enough" to the alert that its text is worth mining for an origin-node guess
@@ -59,18 +59,18 @@ _JSON_SCHEMA_HINT = """Return ONLY a JSON object (no prose, no markdown fences) 
 }"""
 
 
-class IncidentResponder:
+class IncidentDiagnoser:
     """Self-orchestrated diagnose loop: recall -> resolve origin -> prompt ->
     reason -> parse defensively -> write back."""
 
     def __init__(
         self,
-        retriever: Retriever,
+        gatherer: EvidenceGatherer,
         llm: LLMClient,
         incident_repo: IncidentRepository,
         action_repo: ActionRepository,
     ):
-        self.retriever = retriever
+        self.gatherer = gatherer
         self.llm = llm
         self.incident_repo = incident_repo
         self.action_repo = action_repo
@@ -78,10 +78,10 @@ class IncidentResponder:
     # ── the loop ─────────────────────────────────────────────────────────────
 
     def diagnose(self, alert: str, origin_node: str | None = None) -> Diagnosis:
-        # 1. RECALL. If origin_node is given explicitly, Retriever.gather already
-        # runs the upstream trace itself (it accepts origin_node and does so
-        # internally) — no need to duplicate that here.
-        packet = self.retriever.gather(alert, origin_node=origin_node)
+        # 1. RECALL. If origin_node is given explicitly, EvidenceGatherer.gather
+        # already runs the upstream trace itself (it accepts origin_node and does
+        # so internally) — no need to duplicate that here.
+        packet = self.gatherer.gather(alert, origin_node=origin_node)
 
         # 2. ORIGIN-NODE RESOLUTION (Option B) — only when the caller didn't
         # already pin a node and gather() therefore didn't trace anything.
@@ -89,7 +89,7 @@ class IncidentResponder:
         if origin_node is None and not packet.upstream:
             node = self._resolve_origin_node(packet)
             if node is not None:
-                packet.upstream = self.retriever.graph.upstream_callers(node.name, max_depth=4)
+                packet.upstream = self.gatherer.graph.upstream_callers(node.name, max_depth=4)
                 resolved_service = node.service
 
         if resolved_service is None:
@@ -169,7 +169,7 @@ class IncidentResponder:
             if token in seen:
                 continue
             seen.add(token)
-            node = self.retriever.graph.find_node_by_name(token)
+            node = self.gatherer.graph.find_node_by_name(token)
             if node is not None:
                 return node
         return None
@@ -189,7 +189,7 @@ class IncidentResponder:
         # CITATION-ID DECISION: Recall[Incident].item.id / Recall[CodeChange].item.id
         # are UUIDs (seed rows are stored with a uuid5 of the human id, e.g.
         # uuid5(NS, "inc-0001") — see seed/loader.py's _seed_uuid), and nothing
-        # exposed to this layer (Retriever / repositories) resolves that UUID
+        # exposed to this layer (EvidenceGatherer / repositories) resolves that UUID
         # back to the human "inc-0001"/"chg-0001" string — there is no reverse
         # lookup method on IncidentRepository/ChangeRepository, and we own only
         # this file. Inventing a mapping (e.g. re-deriving uuid5 candidates)
