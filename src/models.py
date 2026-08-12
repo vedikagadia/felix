@@ -133,6 +133,19 @@ class Diagnosis:
 
 
 @dataclass
+class DiagnosisResult:
+    """A diagnosis plus the evidence packet it was reasoned over.
+
+    `IncidentResponder.respond()` returns this so a single gather serves both
+    the diagnosis and the evidence display (the CLI's blocks [1]-[5], the API's
+    /chat response). `IncidentResponder.diagnose()` still returns just the
+    `Diagnosis` for callers that don't need the packet."""
+
+    diagnosis: Diagnosis
+    evidence: EvidencePacket
+
+
+@dataclass
 class LLMResult:
     """One completion from an LLMClient — mirrors what Embedder returns for
     embeddings, but for a text generation call."""

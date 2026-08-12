@@ -18,7 +18,7 @@ import re
 from typing import Any
 
 from ..clients.llm import LLMClient
-from ..models import Diagnosis, EvidencePacket, ResolutionStep
+from ..models import Diagnosis, DiagnosisResult, EvidencePacket, ResolutionStep
 from ..store.repositories import ActionRepository, IncidentRepository
 from .evidence_gatherer import EvidenceGatherer
 
@@ -77,11 +77,20 @@ class IncidentDiagnoser:
 
     # ── the loop ─────────────────────────────────────────────────────────────
 
-    def diagnose(self, alert: str, origin_node: str | None = None) -> Diagnosis:
+    def diagnose(self, alert: str, origin_node: str | None = None, k: int = 3) -> Diagnosis:
+        """Run the full loop and return just the Diagnosis.
+
+        Back-compat wrapper over `respond()` for callers (the tests, older CLI
+        paths) that don't need the evidence packet. New callers that want both —
+        the API's /chat, the CLI's evidence display — should call `respond()` so
+        a single gather serves both."""
+        return self.respond(alert, origin_node=origin_node, k=k).diagnosis
+
+    def respond(self, alert: str, origin_node: str | None = None, k: int = 3) -> DiagnosisResult:
         # 1. RECALL. If origin_node is given explicitly, EvidenceGatherer.gather
         # already runs the upstream trace itself (it accepts origin_node and does
         # so internally) — no need to duplicate that here.
-        packet = self.gatherer.gather(alert, origin_node=origin_node)
+        packet = self.gatherer.gather(alert, origin_node=origin_node, k=k)
 
         # 2. ORIGIN-NODE RESOLUTION (Option B) — only when the caller didn't
         # already pin a node and gather() therefore didn't trace anything.
@@ -144,8 +153,9 @@ class IncidentDiagnoser:
                 tokens=total_tokens or None,
             )
 
-        # 7. return.
-        return diagnosis
+        # 7. return the diagnosis together with the evidence it reasoned over
+        # (packet.upstream now reflects any Option-B trace resolved above).
+        return DiagnosisResult(diagnosis=diagnosis, evidence=packet)
 
     # ── origin-node resolution ───────────────────────────────────────────────
 

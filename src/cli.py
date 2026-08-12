@@ -6,12 +6,14 @@
     python -m src seed --truncate
     python -m src parse
     python -m src mcp-probe
+    python -m src serve --reload
 
 `respond` assembles the evidence packet felix reasons over (the retrieval half
 of the agent loop — everything BEFORE the LLM), prints it, then hands it to the
-LLM reasoning step (IncidentDiagnoser.diagnose) for a diagnosis + proposed
-resolution, printed as block [5]. `--no-llm` stops after the evidence packet
-(today's original behavior) and makes no DB writes.
+LLM reasoning step (IncidentDiagnoser) for a diagnosis + proposed resolution,
+printed as block [5]. `--no-llm` stops after the evidence packet and makes no
+DB writes. `serve` exposes the same loop over HTTP for the frontend (see
+src/api/app.py).
 """
 
 from __future__ import annotations
@@ -75,30 +77,34 @@ def _cmd_respond(args: argparse.Namespace) -> None:
     conn = get_conn()
     try:
         gatherer = EvidenceGatherer(conn)
-        packet = gatherer.gather(args.alert, origin_node=args.origin_node, k=args.k)
-        _print_packet(packet)
-
-        if args.no_llm:
-            print("\n" + "-" * 72)
-            print("(--no-llm: stopped at the evidence packet; no diagnosis, no DB writes)")
-            return
-
         settings = get_settings()
-        if settings.llm_provider == "gemini" and not settings.gemini_api_key:
-            print("\n[5] DIAGNOSIS")
-            print("  (skipped: GEMINI_API_KEY is not set — evidence packet only)")
+        llm_unavailable = settings.llm_provider == "gemini" and not settings.gemini_api_key
+
+        # Retrieval-only paths (--no-llm, or no LLM key): gather + print, no LLM,
+        # no writes.
+        if args.no_llm or llm_unavailable:
+            packet = gatherer.gather(args.alert, origin_node=args.origin_node, k=args.k)
+            _print_packet(packet)
+            if args.no_llm:
+                print("\n" + "-" * 72)
+                print("(--no-llm: stopped at the evidence packet; no diagnosis, no DB writes)")
+            else:
+                print("\n[5] DIAGNOSIS")
+                print("  (skipped: GEMINI_API_KEY is not set — evidence packet only)")
             return
 
+        # Full path: respond() gathers ONCE and returns the packet it reasoned
+        # over together with the diagnosis (no second embed/recall).
         from .clients.llm import get_llm
         from .service.diagnoser import IncidentDiagnoser
         from .store.repositories import ActionRepository, IncidentRepository
 
-        llm = get_llm()
-        incident_repo = IncidentRepository(conn)
-        action_repo = ActionRepository(conn)
-        diagnoser = IncidentDiagnoser(gatherer, llm, incident_repo, action_repo)
-        diagnosis = diagnoser.diagnose(args.alert, origin_node=args.origin_node)
-        _print_diagnosis(diagnosis)
+        diagnoser = IncidentDiagnoser(
+            gatherer, get_llm(), IncidentRepository(conn), ActionRepository(conn)
+        )
+        result = diagnoser.respond(args.alert, origin_node=args.origin_node, k=args.k)
+        _print_packet(result.evidence)
+        _print_diagnosis(result.diagnosis)
     finally:
         conn.close()
 
@@ -158,6 +164,28 @@ def _cmd_mcp_probe(args: argparse.Namespace) -> None:
     asyncio.run(_probe())
 
 
+# ── serve ────────────────────────────────────────────────────────────────────
+
+
+def _cmd_serve(args: argparse.Namespace) -> None:
+    """Launch the HTTP API (the same recall + reasoning loop as `respond`,
+    exposed over POST /chat and /recall for the frontend). Requires the `api`
+    extras — `pip install fastapi 'uvicorn[standard]'`."""
+    try:
+        import uvicorn
+    except ModuleNotFoundError:
+        print("serve: uvicorn is not installed. Run: pip install fastapi 'uvicorn[standard]'")
+        return
+
+    # Pass the app as an import string so --reload can re-import on edits.
+    uvicorn.run(
+        "src.api.app:app",
+        host=args.host,
+        port=args.port,
+        reload=args.reload,
+    )
+
+
 # ── arg parsing ─────────────────────────────────────────────────────────────────
 
 
@@ -189,6 +217,12 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_mcp = sub.add_parser("mcp-probe", help="connect to the CockroachDB Managed MCP Server and list its tools")
     p_mcp.set_defaults(func=_cmd_mcp_probe)
+
+    p_serve = sub.add_parser("serve", help="run the HTTP API (POST /chat, /recall) for the frontend")
+    p_serve.add_argument("--host", default="127.0.0.1", help="bind host (default 127.0.0.1)")
+    p_serve.add_argument("--port", type=int, default=8000, help="bind port (default 8000)")
+    p_serve.add_argument("--reload", action="store_true", help="autoreload on code changes (dev)")
+    p_serve.set_defaults(func=_cmd_serve)
 
     return ap
 
