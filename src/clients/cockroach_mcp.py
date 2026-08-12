@@ -22,10 +22,12 @@ from __future__ import annotations
 from contextlib import asynccontextmanager
 from typing import Any
 
-from mcp import ClientSession
-from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
-
 from ..config import get_settings
+
+# NOTE: the `mcp` SDK is imported lazily inside connect() (not at module top) so
+# importing this module is always safe even when `mcp` isn't installed / the
+# endpoint isn't configured — matching the lazy-client pattern the embedder and
+# LLM clients use for their optional SDKs.
 
 
 @asynccontextmanager
@@ -41,6 +43,9 @@ async def connect():
     settings = get_settings()
     if not settings.crdb_mcp_url or not settings.crdb_mcp_api_key:
         raise RuntimeError("CRDB_MCP_URL and CRDB_MCP_API_KEY must be set to connect to the MCP server")
+
+    from mcp import ClientSession
+    from mcp.client.streamable_http import create_mcp_http_client, streamable_http_client
 
     # NOTE: adjust this header if the Cloud Console's MCP config snippet specifies
     # a different auth scheme (e.g. a custom "X-Cockroach-Api-Key" header) — Bearer

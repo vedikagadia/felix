@@ -11,9 +11,18 @@ from where the symptom surfaced up to where the cause likely lives, diagnoses,
 and (eventually) writes the resolution back so it gets smarter over time.
 
 Built for the **CockroachDB × AWS "Build with Agentic Memory"** hackathon
-(deadline 2026-08-18). Requirements: use ≥2 CockroachDB tools (we use the
-native VECTOR type + vector indexing, and the Managed MCP Server on the recall
-path) and ≥1 AWS service (Bedrock — Claude for reasoning, Titan for embeddings).
+(deadline 2026-08-18). Requirements: use ≥2 CockroachDB tools and ≥1 AWS
+service. The two CockroachDB offerings felix actually exercises on the live
+path are **(1) the native VECTOR type + vector indexing** (semantic recall of
+incidents/docs/changes — `embedding <-> %s::VECTOR(1024)` against
+`*_embedding_idx`) and **(2) recursive-CTE graph traversal** (`WITH RECURSIVE`
+over `code_edges` for the upstream symptom-origin trace). AWS: **Bedrock** —
+Claude for reasoning (`clients/llm/bedrock.py`), Titan for embeddings
+(`clients/embedder/titan.py`). The Managed **MCP Server** (`clients/cockroach_mcp.py`
++ the `mcp-probe` CLI command) is wired as a real, invokable entry point but is
+a *stretch* second-offering candidate: it's gated on a live `CRDB_MCP_URL`
+(Cloud is currently 403-blocked), so it is NOT counted toward the ≥2 today —
+the two above are, and both are verified running.
 
 This is a **personal project** on the `vedikagadia` GitHub account. Commit as
 Vedika Gadia / the vedikagadia noreply email. **Never commit under a Salesforce
@@ -152,23 +161,30 @@ cockroach sql --insecure --host=localhost:26257 --database=felix -f sql/seed_dum
 
 ## Status (as of this writing)
 
-Done & verified locally (see git branch `phase-1-memory-pipeline`):
+Done & verified locally:
 - schema, sample project + WORLD.md, all three seed corpora, parser, embedder,
   db helpers, loader, respond.
 - End-to-end: seed load, semantic recall for **both** planted incidents,
   symptom-origin upstream graph trace. `seed_dump.sql` restores clean.
+- **The reasoning step** (branch `llm-reasoning-layer`) — `clients/llm`
+  (LLMClient ABC + `get_llm()`; Gemini default, Bedrock/Claude swappable) and
+  `service/responder.py` (`IncidentResponder.diagnose`): recall → Option-B
+  origin resolution → prompt → LLM → defensive parse + citation-integrity guard
+  → atomic write-back (one transaction: minimal incident + resolution_steps +
+  agent_actions). Both planted puzzles diagnose correctly end-to-end with live
+  Gemini; verified by a 4-reviewer adversarial pass (diagnosis stability,
+  negative control, citation integrity, `--no-llm` no-writes, no-orphan-rows).
 
 Not yet built / deferred:
-- **The reasoning step** — hand the evidence packet from `respond.py` to a model
-  (Bedrock Claude, or a swappable stand-in) to produce a diagnosis + proposed
-  resolution, then write the outcome back to `incidents`/`agent_actions`. This
-  is the obvious next task.
 - **Bedrock model access** (Claude + Titan) — long-lead, needs the AWS console;
   until then `EMBED_PROVIDER=local`.
 - **CockroachDB Cloud cluster** — blocked on a 403 (role/billing); local node
   substitutes. Flip `DATABASE_URL` when resolved.
-- **MCP Server discovery spike** — `mcp_client.py` scaffolding exists; needs a
-  live MCP endpoint to test (auth header / transport may need adjustment).
+- **MCP Server discovery spike** — `clients/cockroach_mcp.py` is now invokable
+  via `python -m src mcp-probe` (connects + lists the server's tools); needs a
+  live `CRDB_MCP_URL` / `CRDB_MCP_API_KEY` to actually run (auth header /
+  transport may need adjustment against the live endpoint). Until Cloud is
+  unblocked it's a stretch second-offering candidate, not the counted one.
 - A considered-but-deferred idea: **graph-boosted change ranking** (union +
   boost changes that touch on-path files, rather than graph-*filtering* them —
   filtering would break Incident B). See `respond.py` discussion.

@@ -5,6 +5,7 @@
     python -m src respond "..." --no-llm
     python -m src seed --truncate
     python -m src parse
+    python -m src mcp-probe
 
 `respond` assembles the evidence packet felix reasons over (the retrieval half
 of the agent loop — everything BEFORE the LLM), prints it, then hands it to the
@@ -131,6 +132,34 @@ def _cmd_parse(args: argparse.Namespace) -> None:
         print(f"{id_to_name.get(e['src_id'])} --{e['kind']}--> {id_to_name.get(e['dst_id'])}")
 
 
+# ── mcp-probe ────────────────────────────────────────────────────────────────
+
+
+def _cmd_mcp_probe(args: argparse.Namespace) -> None:
+    """Connect to the CockroachDB Managed MCP Server and list the tools it
+    advertises — the discovery spike, made runnable. Requires CRDB_MCP_URL /
+    CRDB_MCP_API_KEY (Cloud Console MCP config); prints a clear message rather
+    than a traceback when they're unset."""
+    import asyncio
+
+    from .clients import cockroach_mcp
+
+    settings = get_settings()
+    if not settings.crdb_mcp_url or not settings.crdb_mcp_api_key:
+        print("mcp-probe: CRDB_MCP_URL / CRDB_MCP_API_KEY are not set.")
+        print("  Set them from the Cloud Console MCP config snippet, then re-run.")
+        return
+
+    async def _probe() -> None:
+        async with cockroach_mcp.connect() as session:
+            tools = await cockroach_mcp.list_tools(session)
+            print(f"Connected to {settings.crdb_mcp_url}. {len(tools)} tool(s):")
+            for tool in tools:
+                print(f"  - {tool.name}: {tool.description}")
+
+    asyncio.run(_probe())
+
+
 # ── arg parsing ─────────────────────────────────────────────────────────────────
 
 
@@ -159,6 +188,9 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_parse = sub.add_parser("parse", help="parse the sample project into a code graph and print a summary")
     p_parse.set_defaults(func=_cmd_parse)
+
+    p_mcp = sub.add_parser("mcp-probe", help="connect to the CockroachDB Managed MCP Server and list its tools")
+    p_mcp.set_defaults(func=_cmd_mcp_probe)
 
     return ap
 
