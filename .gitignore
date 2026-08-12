@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+
+# Secrets & local config
+.env
+
+# Local single-node CockroachDB data dir
+.crdb-data/
+*.crt
+*.key
+certs/
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/
+
+# Local-only design docs (not pushed)
+docs/
+
+# Orchestration scratch (build contracts, agent notes — local only)
+.orchestration/

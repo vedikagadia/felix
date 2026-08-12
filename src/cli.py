@@ -1,0 +1,204 @@
+"""felix command-line entry point.
+
+    python -m src respond "checkout failing, db.pool.exhausted during spike"
+    python -m src respond "..." --origin-node ConnectionPool.acquire
+    python -m src respond "..." --no-llm
+    python -m src seed --truncate
+    python -m src parse
+    python -m src mcp-probe
+
+`respond` assembles the evidence packet felix reasons over (the retrieval half
+of the agent loop — everything BEFORE the LLM), prints it, then hands it to the
+LLM reasoning step (IncidentResponder.diagnose) for a diagnosis + proposed
+resolution, printed as block [5]. `--no-llm` stops after the evidence packet
+(today's original behavior) and makes no DB writes.
+"""
+
+from __future__ import annotations
+
+import argparse
+
+from .config import get_settings
+from .models import Diagnosis, EvidencePacket
+from .seed import loader
+from .seed.parser import SERVICE_NAME, parse_project
+from .service.retriever import Retriever
+from .store.connection import get_conn
+
+
+# ── respond ───────────────────────────────────────────────────────────────────
+
+
+def _print_packet(packet: EvidencePacket) -> None:
+    print("=" * 72)
+    print(f"ALERT: {packet.alert}")
+    print("=" * 72)
+
+    print("\n[1] SIMILAR PAST INCIDENTS (episodic memory)")
+    for r in packet.incidents:
+        inc = r.item
+        print(f"  {r.distance:.3f}  [{inc.severity}] {inc.title}")
+
+    print("\n[2] RELEVANT DOCS")
+    for r in packet.docs:
+        doc = r.item
+        print(f"  {r.distance:.3f}  {doc.doc_title} — {doc.heading}")
+
+    print("\n[3] RECENT CODE CHANGES (last 14 days)")
+    if not packet.changes:
+        print("  (none in window)")
+    for r in packet.changes:
+        chg = r.item
+        print(f"  {r.distance:.3f}  {chg.merged_at.date()}  {chg.title}")
+
+    if packet.upstream:
+        print("\n[4] UPSTREAM CALL TRACE (symptom origin -> who drives it)")
+        for hit in packet.upstream:
+            print(f"  depth {hit.depth}  {hit.node.name:28} {hit.node.file}")
+
+    print("\n" + "-" * 72)
+    print("NEXT (not yet built): hand this packet to the reasoning model for a")
+    print("diagnosis + proposed resolution, then write the outcome back to memory.")
+
+
+def _print_diagnosis(diagnosis: Diagnosis) -> None:
+    print("\n[5] DIAGNOSIS")
+    print(f"  summary:    {diagnosis.summary}")
+    print(f"  root_cause: {diagnosis.root_cause}")
+    print("  proposed_steps:")
+    if not diagnosis.proposed_steps:
+        print("    (none)")
+    for step in diagnosis.proposed_steps:
+        print(f"    - {step}")
+    print(f"  cited_incident_ids: {diagnosis.cited_incident_ids}")
+    print(f"  cited_change_ids:   {diagnosis.cited_change_ids}")
+    print(f"  confidence: {diagnosis.confidence}")
+
+
+def _cmd_respond(args: argparse.Namespace) -> None:
+    conn = get_conn()
+    try:
+        retriever = Retriever(conn)
+        packet = retriever.gather(args.alert, origin_node=args.origin_node, k=args.k)
+        _print_packet(packet)
+
+        if args.no_llm:
+            return
+
+        settings = get_settings()
+        if settings.llm_provider == "gemini" and not settings.gemini_api_key:
+            print("\n[5] DIAGNOSIS")
+            print("  (skipped: GEMINI_API_KEY is not set — evidence packet only)")
+            return
+
+        from .clients.llm import get_llm
+        from .service.responder import IncidentResponder
+        from .store.repositories import ActionRepository, IncidentRepository
+
+        llm = get_llm()
+        incident_repo = IncidentRepository(conn)
+        action_repo = ActionRepository(conn)
+        responder = IncidentResponder(retriever, llm, incident_repo, action_repo)
+        diagnosis = responder.diagnose(args.alert, origin_node=args.origin_node)
+        _print_diagnosis(diagnosis)
+    finally:
+        conn.close()
+
+
+# ── seed ───────────────────────────────────────────────────────────────────────
+
+
+def _cmd_seed(args: argparse.Namespace) -> None:
+    counts = loader.run(apply_schema_first=args.apply_schema, truncate=args.truncate)
+    print("seeded:")
+    for k, v in counts.items():
+        print(f"  {k:14} {v}")
+
+
+# ── parse ──────────────────────────────────────────────────────────────────────
+
+
+def _cmd_parse(args: argparse.Namespace) -> None:
+    nodes, edges = parse_project(str(loader.SAMPLE_ROOT))
+    id_to_name = {n["id"]: n["name"] for n in nodes}
+    print(f"=== code graph for {SERVICE_NAME} ===")
+    print(f"nodes: {len(nodes)}  edges: {len(edges)}")
+    by_kind: dict[str, int] = {}
+    for n in nodes:
+        by_kind[n["kind"]] = by_kind.get(n["kind"], 0) + 1
+    print("node counts by kind:", by_kind)
+    print("\n-- edges --")
+    for e in edges:
+        print(f"{id_to_name.get(e['src_id'])} --{e['kind']}--> {id_to_name.get(e['dst_id'])}")
+
+
+# ── mcp-probe ────────────────────────────────────────────────────────────────
+
+
+def _cmd_mcp_probe(args: argparse.Namespace) -> None:
+    """Connect to the CockroachDB Managed MCP Server and list the tools it
+    advertises — the discovery spike, made runnable. Requires CRDB_MCP_URL /
+    CRDB_MCP_API_KEY (Cloud Console MCP config); prints a clear message rather
+    than a traceback when they're unset."""
+    import asyncio
+
+    from .clients import cockroach_mcp
+
+    settings = get_settings()
+    if not settings.crdb_mcp_url or not settings.crdb_mcp_api_key:
+        print("mcp-probe: CRDB_MCP_URL / CRDB_MCP_API_KEY are not set.")
+        print("  Set them from the Cloud Console MCP config snippet, then re-run.")
+        return
+
+    async def _probe() -> None:
+        async with cockroach_mcp.connect() as session:
+            tools = await cockroach_mcp.list_tools(session)
+            print(f"Connected to {settings.crdb_mcp_url}. {len(tools)} tool(s):")
+            for tool in tools:
+                print(f"  - {tool.name}: {tool.description}")
+
+    asyncio.run(_probe())
+
+
+# ── arg parsing ─────────────────────────────────────────────────────────────────
+
+
+def build_parser() -> argparse.ArgumentParser:
+    ap = argparse.ArgumentParser(prog="felix", description="felix — memory-driven incident-response agent")
+    sub = ap.add_subparsers(dest="command", required=True)
+
+    p_respond = sub.add_parser("respond", help="assemble felix's evidence packet for an alert")
+    p_respond.add_argument("alert", help="the alert / error message text")
+    p_respond.add_argument(
+        "--origin-node",
+        help="code_nodes.name where the symptom surfaces (enables the upstream graph trace)",
+    )
+    p_respond.add_argument("-k", type=int, default=3, help="results per source")
+    p_respond.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="evidence packet only ([1]-[4]) — skip the LLM diagnosis step, no DB writes",
+    )
+    p_respond.set_defaults(func=_cmd_respond)
+
+    p_seed = sub.add_parser("seed", help="seed CockroachDB with felix's memory corpora")
+    p_seed.add_argument("--apply-schema", action="store_true", help="run sql/schema.sql first (idempotent)")
+    p_seed.add_argument("--truncate", action="store_true", help="clear incidents/docs/code_changes before seeding")
+    p_seed.set_defaults(func=_cmd_seed)
+
+    p_parse = sub.add_parser("parse", help="parse the sample project into a code graph and print a summary")
+    p_parse.set_defaults(func=_cmd_parse)
+
+    p_mcp = sub.add_parser("mcp-probe", help="connect to the CockroachDB Managed MCP Server and list its tools")
+    p_mcp.set_defaults(func=_cmd_mcp_probe)
+
+    return ap
+
+
+def main() -> None:
+    args = build_parser().parse_args()
+    args.func(args)
+
+
+if __name__ == "__main__":
+    main()

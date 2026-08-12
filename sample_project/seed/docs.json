@@ -1,0 +1,122 @@
+[
+  {
+    "id": "doc-arch-0001",
+    "doc_title": "Checkout Service Architecture",
+    "heading": "Overview",
+    "body": "checkout_service is a small Python payment/checkout service. It has no complex business logic by design; its job is to accept a checkout request, charge the customer through an external payment gateway, and hand the order off to fulfillment. The service is composed of a handful of modules under sample_project/checkout_service/: api.py, checkout.py, db.py, payment_gateway.py, fulfillment_queue.py, config.py, and metrics.py. In incident and dashboard tooling these map to the logical components checkout-api, checkout-handler, connection-pool, payment-gateway, and fulfillment-queue.",
+    "doc_type": "architecture",
+    "source_path": "docs/architecture.md"
+  },
+  {
+    "id": "doc-arch-0002",
+    "doc_title": "Checkout Service Architecture",
+    "heading": "Request flow",
+    "body": "A checkout request enters through CheckoutAPI.post_checkout (api.py), which delegates immediately to CheckoutHandler.process (checkout.py). CheckoutHandler.process is the orchestration point for a single order: it acquires a database connection from the connection pool, charges the customer through the payment gateway, and enqueues the order for fulfillment. CheckoutAPI.get_health is a separate, lightweight endpoint used for liveness/readiness checks and does not touch the payment or queue paths. Every checkout is logged with checkout.start order_id=... amount=..., and ends in either checkout.success order_id=... or an error event such as checkout.payment_failed or checkout.enqueue_failed.",
+    "doc_type": "architecture",
+    "source_path": "docs/architecture.md"
+  },
+  {
+    "id": "doc-arch-0003",
+    "doc_title": "Checkout Service Architecture",
+    "heading": "checkout-handler is the hub",
+    "body": "checkout-handler (CheckoutHandler.process) is the hub of the request graph: it is the only component that talks directly to connection-pool, payment-gateway, and fulfillment-queue. This has an important operational consequence: problems that originate in any one of those three downstream components will surface as errors or latency inside checkout-handler, and from there propagate up to checkout-api. When triaging a checkout-api alert, always check checkout-handler's logs first, then walk outward to the connection pool, the payment gateway, and the fulfillment queue.",
+    "doc_type": "architecture",
+    "source_path": "docs/architecture.md"
+  },
+  {
+    "id": "doc-arch-0004",
+    "doc_title": "Checkout Service Architecture",
+    "heading": "Components: connection-pool",
+    "body": "connection-pool (db.py) manages a fixed-size pool of database connections via ConnectionPool.acquire() and ConnectionPool.release(), with the underlying handle represented by _Connection. Pool size is fixed at process start (see DB_POOL_SIZE in Setup & Operations). When every connection is checked out, the next caller to ConnectionPool.acquire() raises ConnectionPoolExhausted and the service logs db.pool.exhausted in_use=... size=.... get_pool() returns the process-wide singleton pool instance.",
+    "doc_type": "architecture",
+    "source_path": "docs/architecture.md"
+  },
+  {
+    "id": "doc-arch-0005",
+    "doc_title": "Checkout Service Architecture",
+    "heading": "Components: payment-gateway",
+    "body": "payment-gateway (payment_gateway.py) wraps the external payment processor behind PaymentClient.charge(order_id, amount), which internally calls PaymentClient._call_gateway(...). If the gateway is slow or unavailable, charge() retries with exponential backoff, logging payment.retry order_id=... attempt=.../... backoff=...s on each attempt. If every retry is exhausted the call gives up and logs payment.exhausted order_id=... attempts=..., which CheckoutHandler.process surfaces as checkout.payment_failed. Retry behavior is governed by the PAYMENT_MAX_RETRIES and PAYMENT_BASE_DELAY_SECONDS config values described in Setup & Operations.",
+    "doc_type": "architecture",
+    "source_path": "docs/architecture.md"
+  },
+  {
+    "id": "doc-arch-0006",
+    "doc_title": "Checkout Service Architecture",
+    "heading": "Components: fulfillment-queue and the fulfillment-worker boundary",
+    "body": "fulfillment-queue (fulfillment_queue.py) is an in-process bounded queue that CheckoutHandler.process writes to via FulfillmentQueue.enqueue(order_id) once payment has succeeded. FulfillmentQueue.depth() reports current depth, and get_queue() returns the singleton queue. This queue is the hand-off boundary to fulfillment-worker, a downstream consumer that lives outside this repository and drains the queue asynchronously. checkout_service has no visibility into fulfillment-worker internals; from this service's perspective, fulfillment-worker is a black box that is expected to keep queue depth low. If the queue fills to QUEUE_MAX_DEPTH, enqueue() raises QueueFull and the service logs fulfillment.queue.full depth=... max=....",
+    "doc_type": "architecture",
+    "source_path": "docs/architecture.md"
+  },
+  {
+    "id": "doc-setup-0001",
+    "doc_title": "Checkout Service Setup & Operations",
+    "heading": "Configuration constants",
+    "body": "All tunables live in config.py and are loaded once at process start via load(), which logs config.loaded pool_size=... payment_max_retries=.... The current defaults are: DB_POOL_SIZE=10 (number of connections in the pool managed by connection-pool), DB_CONNECT_TIMEOUT_SECONDS=5 (how long ConnectionPool.acquire() waits before giving up), PAYMENT_MAX_RETRIES=8 (maximum retry attempts inside PaymentClient.charge before giving up and logging payment.exhausted), PAYMENT_BASE_DELAY_SECONDS=0.5 (base for the exponential backoff between retries), PAYMENT_GATEWAY_TIMEOUT_SECONDS=30 (per-attempt timeout before PaymentClient._call_gateway raises GatewayTimeout), and QUEUE_MAX_DEPTH=5000 (capacity of fulfillment-queue before FulfillmentQueue.enqueue raises QueueFull).",
+    "doc_type": "setup",
+    "source_path": "docs/setup.md"
+  },
+  {
+    "id": "doc-setup-0002",
+    "doc_title": "Checkout Service Setup & Operations",
+    "heading": "Changing configuration safely",
+    "body": "Config values are read once at startup by load(), so any change to config.py requires a redeploy to take effect; there is no hot-reload. Because PAYMENT_MAX_RETRIES and PAYMENT_BASE_DELAY_SECONDS jointly determine how long a single charge() call can run in the worst case, treat changes to either as a latency-affecting change, not just a reliability tweak — raising retries or backoff makes individual checkout requests take longer end-to-end, which has knock-on effects for anything holding resources for the duration of the call. Always check the recent code_changes log for edits to config.py before assuming current defaults are still in effect.",
+    "doc_type": "setup",
+    "source_path": "docs/setup.md"
+  },
+  {
+    "id": "doc-setup-0003",
+    "doc_title": "Checkout Service Setup & Operations",
+    "heading": "Deploying the service",
+    "body": "checkout_service is deployed as a single process exposing CheckoutAPI. On startup, config.load() runs first and emits config.loaded pool_size=... payment_max_retries=..., followed by initialization of get_pool(), get_queue(), and get_emitter(). Use CheckoutAPI.get_health(request) as the liveness/readiness probe target — a healthy response does not by itself guarantee the connection pool or payment gateway are healthy, only that the process is up and able to handle requests. After any deploy, watch for an immediate spike in db.pool.exhausted, payment.retry, or fulfillment.queue.full events, which usually indicate a config regression rather than a traffic change.",
+    "doc_type": "setup",
+    "source_path": "docs/setup.md"
+  },
+  {
+    "id": "doc-setup-0004",
+    "doc_title": "Checkout Service Setup & Operations",
+    "heading": "Reading the log lines",
+    "body": "Every checkout emits a small set of structured events you can grep for: checkout.start order_id=... amount=... and checkout.success order_id=... bound a successful request; checkout.payment_failed order_id=... err=... and checkout.enqueue_failed order_id=... err=... mark the two ways a checkout can fail after it has started. api.request path=... order_id=... and api.error path=... order_id=... err=... are emitted at the CheckoutAPI boundary. db.pool.acquire in_use=... size=..., db.pool.exhausted in_use=... size=..., and db.pool.release in_use=... trace connection-pool usage. payment.call, payment.retry, and payment.exhausted trace payment-gateway attempts. fulfillment.enqueued order_id=... depth=... and fulfillment.queue.full depth=... max=... trace fulfillment-queue usage.",
+    "doc_type": "setup",
+    "source_path": "docs/setup.md"
+  },
+  {
+    "id": "doc-setup-0005",
+    "doc_title": "Checkout Service Setup & Operations",
+    "heading": "Metrics and dashboards",
+    "body": "MetricsEmitter (metrics.py) is the single place that emits latency and count metrics for the service, via MetricsEmitter.emit_latency(name, value_ms) and MetricsEmitter.emit_count(...), both reachable through the process singleton get_emitter(). Every latency emission is also logged as metrics.latency name=... value_ms=... agg=..., where agg reflects the configured LATENCY_AGGREGATION for that metric. Checkout latency dashboards and SLO alerts are built directly on top of this aggregation, so the choice of aggregation function determines what kind of regression the dashboard can actually detect — an aggregation that smooths over the tail of the distribution will not flag a regression that only affects a minority of slow requests. Always confirm what LATENCY_AGGREGATION is currently set to, and check recent code_changes for edits to metrics.py, before trusting a green latency dashboard during a customer-reported slowness complaint.",
+    "doc_type": "setup",
+    "source_path": "docs/setup.md"
+  },
+  {
+    "id": "doc-runbook-0001",
+    "doc_title": "Checkout Service Runbook",
+    "heading": "Signal: db.pool.exhausted (connection pool exhaustion)",
+    "body": "Symptom: checkout requests fail with ConnectionPoolExhausted, and logs show db.pool.exhausted in_use=... size=... with in_use at or near DB_POOL_SIZE (default 10). This usually surfaces during traffic spikes. First-line response: (1) confirm current pool utilization by tailing db.pool.acquire / db.pool.release counts; (2) check whether the underlying database itself is healthy and responsive — rule out a real DB-side capacity or connectivity problem first; (3) as a mitigation, consider temporarily raising DB_POOL_SIZE and redeploying, which buys headroom while you keep investigating; (4) check payment-gateway health and latency (payment.retry / payment.exhausted volume) since slow downstream calls can cause connections to be held longer than usual. Note: raising DB_POOL_SIZE or scaling the database does not always resolve this — if the pool keeps draining at the same rate after a capacity increase, escalate for a deeper code-level investigation into how long checkout-handler holds each connection.",
+    "doc_type": "runbook",
+    "source_path": "docs/runbook.md"
+  },
+  {
+    "id": "doc-runbook-0002",
+    "doc_title": "Checkout Service Runbook",
+    "heading": "Signal: payment.retry / payment.exhausted (payment gateway issues)",
+    "body": "Symptom: a rising rate of payment.retry order_id=... attempt=.../... backoff=...s events, sometimes culminating in payment.exhausted order_id=... attempts=... and checkout.payment_failed. This indicates payment-gateway is slow or intermittently failing. First-line response: (1) check the external payment processor's own status page and latency metrics; (2) check PAYMENT_GATEWAY_TIMEOUT_SECONDS (default 30) and confirm PaymentClient._call_gateway is timing out at the expected threshold rather than hanging; (3) review PAYMENT_MAX_RETRIES (default 8) and PAYMENT_BASE_DELAY_SECONDS (default 0.5) — a recent increase to either will make retry storms longer and more visible; check code_changes for recent edits to config.py before assuming these are still at defaults; (4) if the gateway is confirmed degraded, consider reducing PAYMENT_MAX_RETRIES temporarily to fail faster rather than pile up retries.",
+    "doc_type": "runbook",
+    "source_path": "docs/runbook.md"
+  },
+  {
+    "id": "doc-runbook-0003",
+    "doc_title": "Checkout Service Runbook",
+    "heading": "Signal: fulfillment.queue.full (queue saturation)",
+    "body": "Symptom: fulfillment.queue.full depth=... max=... events, with checkout.enqueue_failed following as FulfillmentQueue.enqueue raises QueueFull once depth reaches QUEUE_MAX_DEPTH (default 5000). This means fulfillment-worker (the downstream consumer, external to this service) is draining the queue slower than checkout-handler is filling it. First-line response: (1) check fulfillment-worker's own health and throughput — this is very often a downstream consumer problem rather than a checkout_service bug; (2) use FulfillmentQueue.depth() / the fulfillment.enqueued depth=... log trend to see how fast depth is climbing; (3) if fulfillment-worker cannot be fixed quickly, consider pausing or rate-limiting checkout traffic upstream to let the queue drain; (4) do not raise QUEUE_MAX_DEPTH as a first response — it only delays the failure and increases the backlog fulfillment-worker has to clear.",
+    "doc_type": "runbook",
+    "source_path": "docs/runbook.md"
+  },
+  {
+    "id": "doc-runbook-0004",
+    "doc_title": "Checkout Service Runbook",
+    "heading": "General incident response checklist",
+    "body": "For any checkout_service alert: (1) identify which signal fired using the canonical log lines in Setup & Operations; (2) start at checkout-handler, since it is the hub through which every downstream failure (connection-pool, payment-gateway, fulfillment-queue) surfaces — see Architecture; (3) check the code_changes log for anything merged in the last two weeks touching the affected file (config.py, metrics.py, db.py, payment_gateway.py, fulfillment_queue.py) — many incidents trace back to a recent, innocuous-looking merge rather than a sudden environmental change; (4) if logs and recent changes don't explain the symptom, and the dashboards look inconsistent with customer reports, treat that mismatch itself as a signal — verify what a given metric is actually measuring (e.g. its aggregation) before trusting it; (5) escalate to a code-level review of checkout-handler's interaction with the affected component if standard mitigations (scaling, restarting, config rollback) don't resolve the symptom.",
+    "doc_type": "runbook",
+    "source_path": "docs/runbook.md"
+  }
+]

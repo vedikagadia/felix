@@ -1,0 +1,4 @@
+# Runtime dependencies for the checkout service (illustrative — the demo
+# modules themselves only use the stdlib; this file exists so the code_changes
+# history has a real dependency-manifest to reference).
+requests>=2.31

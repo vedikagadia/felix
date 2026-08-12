@@ -1,0 +1,123 @@
+[
+  {
+    "id": "chg-0001",
+    "commit_sha": "9f3a1c7",
+    "merged_at": "2026-08-07T16:42:00Z",
+    "author": "priya.nair",
+    "title": "switch checkout latency metric from p99 to avg",
+    "summary": "Cleanup pass on metrics.py: consolidated the latency aggregation constant and switched LATENCY_AGGREGATION from \"p99\" to \"avg\" so the emitted metrics.latency agg= field matches what most of our other services report. MetricsEmitter.emit_latency is unchanged otherwise. No behavior change expected on the request path; this only affects how latency is aggregated for dashboards/alerts downstream.",
+    "files_changed": ["sample_project/checkout_service/metrics.py"],
+    "services_affected": ["checkout-handler"],
+    "affected_components": ["MetricsEmitter.emit_latency", "metrics.py"]
+  },
+  {
+    "id": "chg-0002",
+    "commit_sha": "4b7e2d0",
+    "merged_at": "2025-09-18T10:05:00Z",
+    "author": "devon.okafor",
+    "title": "bump PAYMENT_MAX_RETRIES to ride out gateway flakiness",
+    "summary": "Raised PAYMENT_MAX_RETRIES in config.py from 5 to 8 after last month's spike in payment.exhausted events. Gives PaymentClient.charge more attempts with the existing exponential backoff (PAYMENT_BASE_DELAY_SECONDS unchanged) before giving up. Should reduce checkout.payment_failed rate during brief gateway blips; tradeoff is longer worst-case charge() duration per order.",
+    "files_changed": ["sample_project/checkout_service/config.py"],
+    "services_affected": ["payment-gateway", "checkout-handler"],
+    "affected_components": ["PaymentClient.charge", "config.py"]
+  },
+  {
+    "id": "chg-0003",
+    "commit_sha": "c1d84fa",
+    "merged_at": "2026-08-09T09:15:00Z",
+    "author": "priya.nair",
+    "title": "add depth gauge logging to fulfillment queue",
+    "summary": "FulfillmentQueue.depth() is now called and logged alongside every fulfillment.enqueued event, not just on failure, so we have a continuous depth trend instead of only seeing depth at enqueue time. Pure observability addition, no change to enqueue() semantics or QUEUE_MAX_DEPTH.",
+    "files_changed": ["sample_project/checkout_service/fulfillment_queue.py"],
+    "services_affected": ["fulfillment-queue"],
+    "affected_components": ["FulfillmentQueue.depth", "FulfillmentQueue.enqueue"]
+  },
+  {
+    "id": "chg-0004",
+    "commit_sha": "a02e6b1",
+    "merged_at": "2026-07-05T13:30:00Z",
+    "author": "marcus.lee",
+    "title": "bump requests dependency for CVE remediation",
+    "summary": "Routine dependency bump for the HTTP client library used by payment_gateway.py to pick up a security patch flagged by the vuln scanner. No API changes on our side; PaymentClient._call_gateway call signature unaffected.",
+    "files_changed": ["sample_project/checkout_service/requirements.txt"],
+    "services_affected": ["payment-gateway"],
+    "affected_components": ["PaymentClient._call_gateway"]
+  },
+  {
+    "id": "chg-0005",
+    "commit_sha": "e58f0c2",
+    "merged_at": "2025-09-25T11:20:00Z",
+    "author": "devon.okafor",
+    "title": "tune DB_POOL_SIZE for higher checkout throughput",
+    "summary": "Increased DB_POOL_SIZE in config.py from 8 to 10 to give connection-pool more headroom during peak checkout traffic windows. ConnectionPool.acquire/release logic unchanged; this only changes the pool's fixed capacity at startup.",
+    "files_changed": ["sample_project/checkout_service/config.py"],
+    "services_affected": ["connection-pool", "checkout-handler"],
+    "affected_components": ["ConnectionPool.acquire", "config.py"]
+  },
+  {
+    "id": "chg-0006",
+    "commit_sha": "7d1b93e",
+    "merged_at": "2026-06-18T08:50:00Z",
+    "author": "marcus.lee",
+    "title": "add structured request-id to api.py logging",
+    "summary": "CheckoutAPI.post_checkout and CheckoutAPI.get_health now include a generated request id in api.request and api.error log lines to make it easier to correlate a single HTTP request across downstream logs. No functional change to routing or validation.",
+    "files_changed": ["sample_project/checkout_service/api.py"],
+    "services_affected": ["checkout-api"],
+    "affected_components": ["CheckoutAPI.post_checkout", "CheckoutAPI.get_health"]
+  },
+  {
+    "id": "chg-0007",
+    "commit_sha": "b9c4a75",
+    "merged_at": "2026-08-01T15:00:00Z",
+    "author": "priya.nair",
+    "title": "validate amount field before charging",
+    "summary": "CheckoutAPI.post_checkout now rejects requests with a non-positive or missing amount before calling CheckoutHandler.process, returning an api.error path=... err=... response instead of letting a bad value reach PaymentClient.charge. Tightens input validation only; does not touch retry or connection-pool behavior.",
+    "files_changed": ["sample_project/checkout_service/api.py"],
+    "services_affected": ["checkout-api"],
+    "affected_components": ["CheckoutAPI.post_checkout"]
+  },
+  {
+    "id": "chg-0008",
+    "commit_sha": "31f6ac8",
+    "merged_at": "2026-06-30T17:10:00Z",
+    "author": "devon.okafor",
+    "title": "emit count metric for enqueue failures",
+    "summary": "Added a MetricsEmitter.emit_count call in checkout.py whenever FulfillmentQueue.enqueue raises QueueFull, so enqueue failures show up as a counted metric in addition to the existing checkout.enqueue_failed log line. No change to queue capacity or retry behavior.",
+    "files_changed": ["sample_project/checkout_service/checkout.py", "sample_project/checkout_service/metrics.py"],
+    "services_affected": ["checkout-handler", "fulfillment-queue"],
+    "affected_components": ["MetricsEmitter.emit_count", "CheckoutHandler.process", "FulfillmentQueue.enqueue"]
+  },
+  {
+    "id": "chg-0009",
+    "commit_sha": "0aa71d4",
+    "merged_at": "2026-08-10T07:40:00Z",
+    "author": "marcus.lee",
+    "title": "reduce log verbosity on successful db pool release",
+    "summary": "Downgraded the db.pool.release in_use=... log line from info to debug level in db.py to cut log volume in steady-state operation; db.pool.acquire and db.pool.exhausted remain at info level so exhaustion is still visible. Purely a logging-level change to ConnectionPool.release.",
+    "files_changed": ["sample_project/checkout_service/db.py"],
+    "services_affected": ["connection-pool"],
+    "affected_components": ["ConnectionPool.release"]
+  },
+  {
+    "id": "chg-0010",
+    "commit_sha": "5c2e9b6",
+    "merged_at": "2026-07-14T12:25:00Z",
+    "author": "priya.nair",
+    "title": "lower PAYMENT_GATEWAY_TIMEOUT_SECONDS after gateway SLA update",
+    "summary": "Reduced PAYMENT_GATEWAY_TIMEOUT_SECONDS in config.py from 45 to 30 to match the payment processor's updated SLA, so PaymentClient._call_gateway gives up and lets the retry loop take over sooner on a slow attempt. Retry count and backoff base are unchanged.",
+    "files_changed": ["sample_project/checkout_service/config.py"],
+    "services_affected": ["payment-gateway"],
+    "affected_components": ["PaymentClient._call_gateway", "config.py"]
+  },
+  {
+    "id": "chg-0011",
+    "commit_sha": "d4f80a3",
+    "merged_at": "2026-06-05T09:05:00Z",
+    "author": "marcus.lee",
+    "title": "extract GatewayTimeout as its own exception class",
+    "summary": "Refactored payment_gateway.py so gateway timeouts raise a dedicated GatewayTimeout exception instead of a generic TimeoutError, making it easier for CheckoutHandler.process to distinguish gateway timeouts from other failure modes in its except clauses. Behavior of the retry loop itself is unchanged.",
+    "files_changed": ["sample_project/checkout_service/payment_gateway.py"],
+    "services_affected": ["payment-gateway", "checkout-handler"],
+    "affected_components": ["GatewayTimeout", "PaymentClient.charge", "CheckoutHandler.process"]
+  }
+]
