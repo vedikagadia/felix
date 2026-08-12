@@ -2,20 +2,23 @@
 
     python -m src respond "checkout failing, db.pool.exhausted during spike"
     python -m src respond "..." --origin-node ConnectionPool.acquire
+    python -m src respond "..." --no-llm
     python -m src seed --truncate
     python -m src parse
 
-`respond` assembles the evidence packet felix would reason over (the retrieval
-half of the agent loop — everything BEFORE the LLM) and prints it. The reasoning
-step (hand the packet to the LLM for a diagnosis + resolution, then write the
-outcome back to memory) is step 2 and not wired in here yet.
+`respond` assembles the evidence packet felix reasons over (the retrieval half
+of the agent loop — everything BEFORE the LLM), prints it, then hands it to the
+LLM reasoning step (IncidentResponder.diagnose) for a diagnosis + proposed
+resolution, printed as block [5]. `--no-llm` stops after the evidence packet
+(today's original behavior) and makes no DB writes.
 """
 
 from __future__ import annotations
 
 import argparse
 
-from .models import EvidencePacket
+from .config import get_settings
+from .models import Diagnosis, EvidencePacket
 from .seed import loader
 from .seed.parser import SERVICE_NAME, parse_project
 from .service.retriever import Retriever
@@ -57,14 +60,48 @@ def _print_packet(packet: EvidencePacket) -> None:
     print("diagnosis + proposed resolution, then write the outcome back to memory.")
 
 
+def _print_diagnosis(diagnosis: Diagnosis) -> None:
+    print("\n[5] DIAGNOSIS")
+    print(f"  summary:    {diagnosis.summary}")
+    print(f"  root_cause: {diagnosis.root_cause}")
+    print("  proposed_steps:")
+    if not diagnosis.proposed_steps:
+        print("    (none)")
+    for step in diagnosis.proposed_steps:
+        print(f"    - {step}")
+    print(f"  cited_incident_ids: {diagnosis.cited_incident_ids}")
+    print(f"  cited_change_ids:   {diagnosis.cited_change_ids}")
+    print(f"  confidence: {diagnosis.confidence}")
+
+
 def _cmd_respond(args: argparse.Namespace) -> None:
     conn = get_conn()
     try:
         retriever = Retriever(conn)
         packet = retriever.gather(args.alert, origin_node=args.origin_node, k=args.k)
+        _print_packet(packet)
+
+        if args.no_llm:
+            return
+
+        settings = get_settings()
+        if settings.llm_provider == "gemini" and not settings.gemini_api_key:
+            print("\n[5] DIAGNOSIS")
+            print("  (skipped: GEMINI_API_KEY is not set — evidence packet only)")
+            return
+
+        from .clients.llm import get_llm
+        from .service.responder import IncidentResponder
+        from .store.repositories import ActionRepository, IncidentRepository
+
+        llm = get_llm()
+        incident_repo = IncidentRepository(conn)
+        action_repo = ActionRepository(conn)
+        responder = IncidentResponder(retriever, llm, incident_repo, action_repo)
+        diagnosis = responder.diagnose(args.alert, origin_node=args.origin_node)
+        _print_diagnosis(diagnosis)
     finally:
         conn.close()
-    _print_packet(packet)
 
 
 # ── seed ───────────────────────────────────────────────────────────────────────
@@ -108,6 +145,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="code_nodes.name where the symptom surfaces (enables the upstream graph trace)",
     )
     p_respond.add_argument("-k", type=int, default=3, help="results per source")
+    p_respond.add_argument(
+        "--no-llm",
+        action="store_true",
+        help="evidence packet only ([1]-[4]) — skip the LLM diagnosis step, no DB writes",
+    )
     p_respond.set_defaults(func=_cmd_respond)
 
     p_seed = sub.add_parser("seed", help="seed CockroachDB with felix's memory corpora")

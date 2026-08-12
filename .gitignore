@@ -22,3 +22,6 @@ certs/
 
 # Local-only design docs (not pushed)
 docs/
+
+# Orchestration scratch (build contracts, agent notes — local only)
+.orchestration/

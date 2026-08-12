@@ -23,13 +23,19 @@ class Settings:
     # embedder (clients/embedder): "local" (bge-large) | "titan" (Bedrock)
     embed_provider: str
 
-    # AWS / Bedrock (used only when embed_provider == "titan", and later the LLM)
+    # AWS / Bedrock
     aws_region: str
-    bedrock_embed_model_id: str
+    bedrock_embed_model_id: str  # Titan embeddings model (embed_provider == "titan")
+    bedrock_model_id: str  # Claude text model (llm_provider == "bedrock")
 
     # CockroachDB Managed MCP Server (recall-path spike; optional)
     crdb_mcp_url: str | None
     crdb_mcp_api_key: str | None
+
+    # LLM reasoning (clients/llm): "gemini" | "bedrock"
+    llm_provider: str
+    gemini_api_key: str | None
+    gemini_model_id: str
 
     @classmethod
     def load(cls) -> "Settings":
@@ -41,8 +47,14 @@ class Settings:
             bedrock_embed_model_id=os.environ.get(
                 "BEDROCK_EMBED_MODEL_ID", "amazon.titan-embed-text-v2:0"
             ),
+            bedrock_model_id=os.environ.get(
+                "BEDROCK_MODEL_ID", "anthropic.claude-3-5-haiku-20241022-v1:0"
+            ),
             crdb_mcp_url=os.environ.get("CRDB_MCP_URL") or None,
             crdb_mcp_api_key=os.environ.get("CRDB_MCP_API_KEY") or None,
+            llm_provider=os.environ.get("LLM_PROVIDER", "gemini").strip().lower(),
+            gemini_api_key=os.environ.get("GEMINI_API_KEY") or None,
+            gemini_model_id=os.environ.get("GEMINI_MODEL_ID", "gemini-flash-latest"),
         )
 
 

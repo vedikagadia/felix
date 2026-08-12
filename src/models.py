@@ -128,3 +128,16 @@ class Diagnosis:
     proposed_steps: list[str] = field(default_factory=list)
     cited_incident_ids: list[str] = field(default_factory=list)
     cited_change_ids: list[str] = field(default_factory=list)
+    confidence: float | None = None
+    incident_id: str | None = None
+
+
+@dataclass
+class LLMResult:
+    """One completion from an LLMClient — mirrors what Embedder returns for
+    embeddings, but for a text generation call."""
+
+    text: str
+    model: str
+    input_tokens: int | None = None
+    output_tokens: int | None = None

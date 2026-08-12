@@ -4,12 +4,36 @@ from __future__ import annotations
 
 from typing import Sequence
 
+import psycopg
+
 from ...models import Incident, Recall, ResolutionStep
 from ..connection import vec_literal
 from .base import BaseRepository
 
 
 class IncidentRepository(BaseRepository):
+    @staticmethod
+    def _insert_resolution_step(
+        cur: psycopg.Cursor,
+        incident_id: str,
+        *,
+        step_order: int,
+        action: str,
+        command: str | None,
+        outcome: str | None,
+    ) -> None:
+        """Insert one resolution_steps row. Shared by insert() and
+        add_resolution_steps() so the SQL lives in exactly one place."""
+        cur.execute(
+            """
+            INSERT INTO resolution_steps
+                (incident_id, step_order, action, command, outcome)
+            VALUES
+                (%s, %s, %s, %s, %s)
+            """,
+            (incident_id, step_order, action, command, outcome),
+        )
+
     def insert(
         self,
         *,
@@ -53,22 +77,57 @@ class IncidentRepository(BaseRepository):
                 ),
             )
             for step in resolution_steps or []:
-                cur.execute(
-                    """
-                    INSERT INTO resolution_steps
-                        (incident_id, step_order, action, command, outcome)
-                    VALUES
-                        (%s, %s, %s, %s, %s)
-                    """,
-                    (
-                        id,
-                        step["step_order"],
-                        step["action"],
-                        step.get("command"),
-                        step.get("outcome"),
-                    ),
+                self._insert_resolution_step(
+                    cur,
+                    id,
+                    step_order=step["step_order"],
+                    action=step["action"],
+                    command=step.get("command"),
+                    outcome=step.get("outcome"),
                 )
         return id
+
+    def insert_minimal(
+        self,
+        *,
+        title: str,
+        symptoms: str,
+        service: str | None = None,
+        severity: str | None = None,
+    ) -> str:
+        """Insert one incidents row WITHOUT an embedding (embedding stays NULL,
+        so this row is invisible to vector recall — `recall()`'s ORDER BY
+        distance treats NULL embeddings as non-matching / sorts them last).
+
+        Used by the reasoning layer to create a parent incident row for an
+        alert being diagnosed live, so resolution_steps have somewhere to
+        attach. `id` is DB-generated (gen_random_uuid() default) since there's
+        no deterministic seed id for a live alert. Returns the new incident id.
+        """
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                INSERT INTO incidents (title, symptoms, service, severity)
+                VALUES (%s, %s, %s, %s)
+                RETURNING id
+                """,
+                (title, symptoms, service, severity),
+            )
+            row = cur.fetchone()
+        return str(row[0])
+
+    def add_resolution_steps(self, incident_id: str, steps: list[ResolutionStep]) -> None:
+        """Insert ordered resolution_steps for an existing incident."""
+        with self.conn.cursor() as cur:
+            for step in steps:
+                self._insert_resolution_step(
+                    cur,
+                    incident_id,
+                    step_order=step.step_order,
+                    action=step.action,
+                    command=step.command,
+                    outcome=step.outcome,
+                )
 
     def recall(self, query_vec: Sequence[float], k: int = 5) -> list[Recall[Incident]]:
         """Top-k incidents nearest to query_vec, by L2 distance on embedding."""
