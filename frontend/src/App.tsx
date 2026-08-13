@@ -1,6 +1,15 @@
 import { useState } from "react";
-import type { ChatRequest, ChatResponse, EvidencePacket } from "./api/types";
+import type {
+  AlertPayload,
+  ChatRequest,
+  ChatResponse,
+  Diagnosis,
+  EvidencePacket,
+  SessionResponse,
+} from "./api/types";
 import { sendChatStream, usingMock } from "./api/client";
+import { getSession } from "./api/alerts";
+import { AlertBanner } from "./components/AlertBanner";
 import { AlertComposer } from "./components/AlertComposer";
 import { ChatThread } from "./components/ChatThread";
 import { EvidencePanel } from "./components/EvidencePanel";
@@ -19,6 +28,42 @@ export interface Turn {
 
 let nextId = 1;
 
+const EMPTY_EVIDENCE = (alert: string): EvidencePacket => ({
+  alert,
+  incidents: [],
+  docs: [],
+  changes: [],
+  upstream: [],
+});
+
+/**
+ * Fold a loaded triage session into a single chat Turn: the synthesized alert
+ * as the user side, the reconstructed diagnosis as felix's reply. Evidence is
+ * empty for a seeded turn (the session endpoint doesn't re-run recall); a
+ * follow-up through /chat/stream fills the panel live.
+ */
+function seededTurn(id: number, session: SessionResponse): Turn {
+  const diagnosis: Diagnosis = session.diagnosis ?? {
+    summary: session.alert,
+    root_cause: null,
+    proposed_steps: [],
+    cited_incident_ids: [],
+    cited_change_ids: [],
+    confidence: null,
+    incident_id: session.incident_id,
+  };
+  return {
+    id,
+    request: { alert: session.alert, origin_node: session.origin_node, session_id: session.session_id },
+    response: {
+      diagnosis,
+      evidence: session.evidence ?? EMPTY_EVIDENCE(session.alert),
+      session_id: session.session_id,
+    },
+    pending: false,
+  };
+}
+
 export function App() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
@@ -31,6 +76,42 @@ export function App() {
 
   function newIncident() {
     setSessionId(null);
+  }
+
+  // Open the triage session behind a clicked alert: load its pre-seeded turns,
+  // render them in the existing chat as one Turn (the synthesized alert + the
+  // agent's diagnosis), and adopt its session_id so the composer's next message
+  // is a follow-up through the same /chat/stream path — no forked rendering.
+  async function openAlert(alert: AlertPayload) {
+    const existing = turns.find((t) => t.request.session_id === alert.session_id);
+    if (existing) {
+      setActiveId(existing.id);
+      setSessionId(alert.session_id);
+      return;
+    }
+
+    let session: SessionResponse;
+    try {
+      session = await getSession(alert.session_id);
+    } catch (e) {
+      const id = nextId++;
+      setTurns((prev) => [
+        ...prev,
+        {
+          id,
+          request: { alert: alert.summary, session_id: alert.session_id },
+          error: e instanceof Error ? e.message : String(e),
+          pending: false,
+        },
+      ]);
+      setActiveId(id);
+      return;
+    }
+
+    const id = nextId++;
+    setTurns((prev) => [...prev, seededTurn(id, session)]);
+    setActiveId(id);
+    setSessionId(session.session_id);
   }
 
   async function submit(req: ChatRequest) {
@@ -85,6 +166,8 @@ export function App() {
           </span>
         )}
       </header>
+
+      <AlertBanner onSelect={openAlert} activeSessionId={sessionId} />
 
       <main className="app__body">
         <section className="chat">

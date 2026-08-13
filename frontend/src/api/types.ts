@@ -132,6 +132,47 @@ export interface ChatResponse {
   session_id?: string | null;
 }
 
+// ── real-time CDC alerts (see .orchestration/CDC_INTERFACE.md §7) ────────────
+
+/**
+ * A live alert the watcher raised off the metrics changefeed, as served by
+ * `GET /alerts`. `summary` is the synthesized alert text verbatim; `service`
+ * and `metric` are parsed from the session's origin_node and may be null.
+ */
+export interface AlertPayload {
+  session_id: string;
+  service: string | null;
+  metric: string | null;
+  summary: string;
+  created_at: string; // ISO 8601
+  status: string;
+}
+
+/** One pre-seeded turn of a CDC session's transcript (`GET /sessions/{id}`). */
+export interface SessionTurn {
+  turn_order: number;
+  role: string;
+  content: string;
+}
+
+/**
+ * A triage session's full state from `GET /sessions/{id}`: enough to render the
+ * pre-seeded turns and then continue via `/chat/stream`. `diagnosis` is
+ * reconstructed from the linked incident; `evidence` is null on this endpoint
+ * (live evidence arrives when the operator sends a follow-up).
+ */
+export interface SessionResponse {
+  session_id: string;
+  source: string;
+  status: string;
+  alert: string;
+  origin_node: string | null;
+  turns: SessionTurn[];
+  incident_id: string | null;
+  diagnosis: Diagnosis | null;
+  evidence: EvidencePacket | null;
+}
+
 /**
  * Callbacks for the streaming path (POST /chat/stream, Server-Sent Events).
  * `onEvidence` fires once as soon as recall completes (so the evidence panel

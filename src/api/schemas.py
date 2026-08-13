@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Any
 
 from ..models import (
+    ActiveIncident,
     CodeChange,
     CodeNode,
     Diagnosis,
@@ -116,6 +117,63 @@ def diagnosis_to_dict(d: Diagnosis) -> dict[str, Any]:
         "cited_change_ids": d.cited_change_ids,
         "confidence": d.confidence,
         "incident_id": d.incident_id,
+    }
+
+
+def alert_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    """One `list_alerts` row -> the frozen AlertPayload (CDC_INTERFACE §7.3).
+
+    `service`/`metric` are split out of the `"cdc:<service>:<metric>"` origin_node
+    the watcher encodes; a missing or short origin_node degrades to null/null.
+    `created_at` arrives as a psycopg datetime, so it's ISO-8601'd here."""
+    service = metric = None
+    origin_node = row.get("origin_node")
+    if origin_node:
+        parts = origin_node.split(":")
+        if len(parts) == 3 and parts[0] == "cdc":
+            _, service, metric = parts
+    return {
+        "session_id": row["id"],
+        "service": service,
+        "metric": metric,
+        "summary": row["alert"],
+        "created_at": _iso(row["created_at"]),
+        "status": row["status"],
+    }
+
+
+def session_to_dict(session: ActiveIncident, incident: Incident | None) -> dict[str, Any]:
+    """A session + its linked episodic incident -> the SessionResponse
+    (CDC_INTERFACE §7.2). The diagnosis is reconstructed from the incident's
+    root_cause + resolution_steps and the agent turn; `evidence` is null on this
+    read (recall is not re-run — that would duplicate the diagnoser)."""
+    agent_turn = next((t for t in session.turns if t.role == "agent"), None)
+    diagnosis = None
+    if incident is not None:
+        diagnosis = diagnosis_to_dict(
+            Diagnosis(
+                summary=agent_turn.content if agent_turn is not None else "",
+                root_cause=incident.root_cause,
+                proposed_steps=[
+                    {"action": s.action, "command": s.command, "outcome": s.outcome}
+                    for s in incident.resolution_steps
+                ],
+                incident_id=incident.id,
+            )
+        )
+    return {
+        "session_id": session.id,
+        "source": session.source,
+        "status": session.status,
+        "alert": session.alert,
+        "origin_node": session.origin_node,
+        "turns": [
+            {"turn_order": t.turn_order, "role": t.role, "content": t.content}
+            for t in session.turns
+        ],
+        "incident_id": session.incident_id,
+        "diagnosis": diagnosis,
+        "evidence": None,
     }
 
 

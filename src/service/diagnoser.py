@@ -82,14 +82,16 @@ class IncidentDiagnoser:
 
     # ── the loop ─────────────────────────────────────────────────────────────
 
-    def diagnose(self, alert: str, origin_node: str | None = None, k: int = 3) -> Diagnosis:
+    def diagnose(
+        self, alert: str, origin_node: str | None = None, k: int = 3, *, source: str = "chat"
+    ) -> Diagnosis:
         """Run the full loop and return just the Diagnosis.
 
         Back-compat wrapper over `respond()` for callers (the tests, older CLI
         paths) that don't need the evidence packet. New callers that want both —
         the API's /chat, the CLI's evidence display — should call `respond()` so
         a single gather serves both."""
-        return self.respond(alert, origin_node=origin_node, k=k).diagnosis
+        return self.respond(alert, origin_node=origin_node, k=k, source=source).diagnosis
 
     def respond(
         self,
@@ -97,6 +99,8 @@ class IncidentDiagnoser:
         origin_node: str | None = None,
         k: int = 3,
         session_id: str | None = None,
+        *,
+        source: str = "chat",
     ) -> DiagnosisResult:
         """Run one turn of the loop.
 
@@ -122,7 +126,7 @@ class IncidentDiagnoser:
         diagnosis = self._parse_diagnosis(result.text, packet)
 
         # 6-7. WRITE-BACK + return (shared with the streaming path).
-        return self._finish(alert, origin_node, resolved_service, diagnosis, result, packet, session)
+        return self._finish(alert, origin_node, resolved_service, diagnosis, result, packet, session, source)
 
     def respond_stream(
         self,
@@ -130,6 +134,8 @@ class IncidentDiagnoser:
         origin_node: str | None = None,
         k: int = 3,
         session_id: str | None = None,
+        *,
+        source: str = "chat",
     ):
         """Streaming variant of `respond()` — a generator yielding typed events
         so a transport (the SSE endpoint) can forward progress live. Same loop,
@@ -166,7 +172,7 @@ class IncidentDiagnoser:
         result = LLMResult(text=full_text, model=self.llm.model_id, input_tokens=None, output_tokens=None)
         diagnosis = self._parse_diagnosis(full_text, packet)
 
-        yield ("done", self._finish(alert, origin_node, resolved_service, diagnosis, result, packet, session))
+        yield ("done", self._finish(alert, origin_node, resolved_service, diagnosis, result, packet, session, source))
 
     def _prepare(
         self, alert: str, origin_node: str | None, k: int, session_id: str | None
@@ -209,6 +215,7 @@ class IncidentDiagnoser:
         result,
         packet: EvidencePacket,
         session,
+        source: str = "chat",
     ) -> DiagnosisResult:
         """Steps 6-7 shared by both paths: atomic write-back (split by turn kind)
         then return the DiagnosisResult with the session id to continue."""
@@ -221,7 +228,7 @@ class IncidentDiagnoser:
             result_session_id = self._write_follow_up(session, alert, diagnosis, result, total_tokens)
         else:
             result_session_id = self._write_first_turn(
-                alert, origin_node, resolved_service, diagnosis, result, total_tokens
+                alert, origin_node, resolved_service, diagnosis, result, total_tokens, source
             )
 
         # return the diagnosis + the evidence it reasoned over + the session to
@@ -236,6 +243,7 @@ class IncidentDiagnoser:
         diagnosis: Diagnosis,
         result,
         total_tokens: int,
+        source: str = "chat",
     ) -> str | None:
         """First turn: mint an episodic incident (+ steps + audit), and — if
         working memory is enabled — open a session and seed its transcript.
@@ -249,6 +257,7 @@ class IncidentDiagnoser:
             incident_id = self.incident_repo.insert_minimal(
                 title=title,
                 symptoms=alert,
+                root_cause=diagnosis.root_cause,
                 service=resolved_service,
                 severity=None,
             )
@@ -258,7 +267,7 @@ class IncidentDiagnoser:
 
             if self.active_repo is not None:
                 session_id = self.active_repo.create_session(
-                    alert=alert, origin_node=origin_node, incident_id=incident_id
+                    alert=alert, origin_node=origin_node, incident_id=incident_id, source=source
                 )
                 self.active_repo.append_turn(session_id, role="user", content=alert)
                 self.active_repo.append_turn(session_id, role="agent", content=diagnosis.summary)

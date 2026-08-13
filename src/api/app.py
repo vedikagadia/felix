@@ -23,7 +23,13 @@ from pydantic import BaseModel, Field
 from ..config import get_settings
 from ..service.evidence_gatherer import EvidenceGatherer
 from ..store.connection import get_conn
-from .schemas import diagnosis_to_dict, packet_to_dict, result_to_dict
+from .schemas import (
+    alert_to_dict,
+    diagnosis_to_dict,
+    packet_to_dict,
+    result_to_dict,
+    session_to_dict,
+)
 
 
 def _sse(event: str, data: dict) -> str:
@@ -85,6 +91,33 @@ def create_app() -> FastAPI:
         gatherer = EvidenceGatherer(conn)
         packet = gatherer.gather(req.alert, origin_node=req.origin_node, k=req.k)
         return {"evidence": packet_to_dict(packet)}
+
+    @app.get("/alerts")
+    def alerts(conn=Depends(db_conn)) -> dict:
+        """Open cdc-sourced sessions, newest-first, as frozen AlertPayloads
+        (CDC_INTERFACE §7.3). Pure read — the browser polls this every 3s; no
+        LLM guard. Returns {"alerts": [AlertPayload, ...]}."""
+        from ..store.repositories import ActiveIncidentRepository
+
+        rows = ActiveIncidentRepository(conn).list_alerts(source="cdc", status="open")
+        return {"alerts": [alert_to_dict(r) for r in rows]}
+
+    @app.get("/sessions/{session_id}")
+    def get_session(session_id: str, conn=Depends(db_conn)) -> dict:
+        """A session's transcript + the diagnosis reconstructed from its linked
+        episodic incident (CDC_INTERFACE §7.2). 404 if unknown. Pure read — no
+        LLM guard, no recall re-run (`evidence` is null)."""
+        from ..store.repositories import ActiveIncidentRepository, IncidentRepository
+
+        session = ActiveIncidentRepository(conn).get_session(session_id)
+        if session is None:
+            raise HTTPException(status_code=404, detail="session not found")
+        incident = (
+            IncidentRepository(conn).get(session.incident_id)
+            if session.incident_id is not None
+            else None
+        )
+        return session_to_dict(session, incident)
 
     @app.post("/chat")
     def chat(req: ChatRequest, conn=Depends(db_conn)) -> dict:
