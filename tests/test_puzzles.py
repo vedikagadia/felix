@@ -29,17 +29,17 @@ pytestmark = pytest.mark.live
 
 
 def _run_and_show(diagnoser, alert: str, origin_node: str | None = None):
-    """Gather + print the evidence packet, diagnose + print the result, then
-    return the Diagnosis. Reuses the CLI's formatters so the demo output matches
-    `python -m src respond`. (The packet is gathered here for display; diagnose()
-    re-gathers internally — a negligible second embed for a 3-test demo.)"""
+    """Run one turn and print the evidence packet + diagnosis, then return the
+    Diagnosis. Reuses the CLI's formatters so the demo output matches
+    `python -m src respond`. A single `respond()` serves both the display and
+    the assertions — its `DiagnosisResult` carries the same packet it reasoned
+    over, so there's no second gather."""
     from src.cli import _print_diagnosis, _print_packet
 
-    packet = diagnoser.gatherer.gather(alert, origin_node=origin_node)
-    _print_packet(packet)
-    diagnosis = diagnoser.diagnose(alert, origin_node=origin_node)
-    _print_diagnosis(diagnosis)
-    return diagnosis
+    result = diagnoser.respond(alert, origin_node=origin_node)
+    _print_packet(result.evidence)
+    _print_diagnosis(result.diagnosis)
+    return result.diagnosis
 
 
 @pytest.fixture(scope="module")
