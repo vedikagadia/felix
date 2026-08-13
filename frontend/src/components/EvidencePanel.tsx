@@ -25,14 +25,18 @@ export function EvidencePanel({ turn }: { turn: Turn | null }) {
     );
   }
 
-  if (turn.pending) {
+  // Evidence arrives (streamed) before the final response, so prefer whichever
+  // we have — this lets the panel fill while the diagnosis is still generating.
+  const evidence = turn.response?.evidence ?? turn.evidence;
+  const diagnosis = turn.response?.diagnosis;
+
+  if (!evidence) {
+    if (turn.error) {
+      return <div className="evidence__empty">No evidence — the request did not complete.</div>;
+    }
     return <div className="evidence__empty">Gathering evidence…</div>;
   }
-  if (turn.error || !turn.response) {
-    return <div className="evidence__empty">No evidence — the request did not complete.</div>;
-  }
 
-  const { evidence, diagnosis } = turn.response;
   return <EvidenceBody packet={evidence} diagnosis={diagnosis} />;
 }
 
@@ -40,9 +44,11 @@ function dist(d: number) {
   return d.toFixed(3);
 }
 
-function EvidenceBody({ packet, diagnosis }: { packet: EvidencePacket; diagnosis: Diagnosis }) {
-  const citedInc = new Set(diagnosis.cited_incident_ids);
-  const citedChg = new Set(diagnosis.cited_change_ids);
+function EvidenceBody({ packet, diagnosis }: { packet: EvidencePacket; diagnosis?: Diagnosis }) {
+  // diagnosis is absent while evidence is streaming in ahead of the reasoning;
+  // citation highlights simply light up once it lands.
+  const citedInc = new Set(diagnosis?.cited_incident_ids ?? []);
+  const citedChg = new Set(diagnosis?.cited_change_ids ?? []);
 
   return (
     <div className="evidence__body">

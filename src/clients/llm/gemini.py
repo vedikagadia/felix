@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Iterator
+
 from ...config import get_settings
 from ...models import LLMResult
 from . import LLMClient
@@ -72,3 +74,31 @@ class GeminiClient(LLMClient):
             input_tokens=input_tokens,
             output_tokens=output_tokens,
         )
+
+    def stream(self, prompt: str, *, system: str | None = None) -> Iterator[str]:
+        """Real server-side streaming: `generate_content(stream=True)` returns an
+        iterable of partial responses; each chunk carries the newly-generated
+        text. We yield those deltas as they arrive so the caller can forward them
+        to the UI live. The concatenation of all yielded deltas equals what
+        `complete()` would have returned for the same prompt.
+
+        Each chunk's `.text` can raise ValueError for the same reasons as in
+        `complete()` (SAFETY/RECITATION/etc.), so we guard it and fall back to
+        scanning the chunk's parts. Empty deltas are skipped.
+        """
+        model = self._get_model(system)
+        response = model.generate_content(prompt, stream=True)
+        for chunk in response:
+            try:
+                delta = chunk.text
+            except ValueError:
+                delta = None
+            if not delta:
+                candidates = getattr(chunk, "candidates", None) or []
+                parts = []
+                if candidates:
+                    content = getattr(candidates[0], "content", None)
+                    parts = getattr(content, "parts", None) or []
+                delta = "".join(getattr(p, "text", "") for p in parts)
+            if delta:
+                yield delta

@@ -187,6 +187,12 @@ curl -s -X POST http://127.0.0.1:8000/recall \
 curl -s -X POST http://127.0.0.1:8000/chat \
   -H 'Content-Type: application/json' \
   -d '{"alert":"checkout failing, db.pool.exhausted during traffic spike","origin_node":"ConnectionPool.acquire","k":3}'
+
+# streaming full loop — Server-Sent Events (evidence → deltas → done). -N
+# disables curl buffering so you see frames arrive live:
+curl -sN -X POST http://127.0.0.1:8000/chat/stream \
+  -H 'Content-Type: application/json' \
+  -d '{"alert":"checkout failing, db.pool.exhausted during traffic spike","origin_node":"ConnectionPool.acquire","k":3}'
 ```
 
 `/chat` returns **503** if `LLM_PROVIDER=gemini` but `GEMINI_API_KEY` is unset —

@@ -67,8 +67,8 @@ src/                  # layered: cli/api -> service -> clients/store -> models/c
     repositories/     # one per source: incidents, docs, changes, graph (blast_radius/upstream_callers), actions, active (working memory). Return domain models
   service/
     evidence_gatherer.py # EvidenceGatherer(conn, embedder) -> EvidencePacket (retrieval half of the loop)
-    diagnoser.py      # IncidentDiagnoser: respond(session_id?) -> DiagnosisResult (reason + write-back, multi-turn aware); diagnose() returns just the Diagnosis
-  api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /recall, /health), schemas.py (serialize to the frontend contract)
+    diagnoser.py      # IncidentDiagnoser: respond(session_id?) -> DiagnosisResult (reason + write-back, multi-turn aware); respond_stream() = SSE generator twin; diagnose() returns just the Diagnosis
+  api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /chat/stream [SSE], /recall, /health), schemas.py (serialize to the frontend contract)
   seed/
     parser.py         # AST -> code graph (42 nodes / 22 edges), deterministic uuid5 ids
     loader.py         # Seeder: parse + embed + insert -> the integration seam
@@ -191,10 +191,14 @@ Done & verified locally:
   negative control, citation integrity, `--no-llm` no-writes, no-orphan-rows).
 - **The HTTP API** (`src/api/`, FastAPI) — a second thin driver over the service
   layer alongside the CLI. `python -m src serve` exposes `POST /chat` →
-  `{diagnosis, evidence}`, `POST /recall` → `{evidence}` (retrieval only), and
-  `GET /health`. Serializes to the contract in `frontend/src/api/types.ts`.
-  Byte-compiles clean; not yet run end-to-end against a live node (needs the
-  running stack). Requires `fastapi` + `uvicorn` (now in requirements.txt).
+  `{diagnosis, evidence, session_id}`, `POST /chat/stream` → the same loop as
+  **Server-Sent Events** (an `evidence` frame after recall, `delta` frames as the
+  model generates, then a `done` frame with the full envelope — the frontend
+  drives the live-reasoning UI off this), `POST /recall` → `{evidence}`
+  (retrieval only), and `GET /health`. Serializes to the contract in
+  `frontend/src/api/types.ts`. Requires `fastapi` + `uvicorn` (in
+  requirements.txt). Verified end-to-end against the local node (both the
+  blocking and streaming paths).
 - **The frontend** (`frontend/`, React + Vite + TypeScript) — a chat UI: alert →
   diagnosis, with an evidence panel showing recalled incidents/docs/changes + the
   upstream trace. Runs in mock mode with no backend; set `VITE_API_URL` (a

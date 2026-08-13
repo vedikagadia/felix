@@ -10,8 +10,8 @@
  * ChatResponse (src/api/types.ts). Nothing else in the app talks to the network.
  */
 
-import type { ChatRequest, ChatResponse } from "./types";
-import { mockChat } from "./mock";
+import type { ChatRequest, ChatResponse, StreamHandlers } from "./types";
+import { mockChat, mockChatStream } from "./mock";
 
 const API_URL = import.meta.env.VITE_API_URL as string | undefined;
 const FORCE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
@@ -57,4 +57,93 @@ export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
   }
 
   return (await res.json()) as ChatResponse;
+}
+
+/**
+ * Streaming twin of `sendChat`: POSTs to `/chat/stream` and drives `handlers`
+ * from the Server-Sent Events the backend emits (evidence → deltas → done).
+ *
+ * EventSource can't POST a body, so we read the response body as a stream and
+ * parse SSE frames by hand. Never throws — failures are delivered via
+ * `handlers.onError` so the caller has one place to handle them.
+ */
+export async function sendChatStream(req: ChatRequest, handlers: StreamHandlers): Promise<void> {
+  if (usingMock) {
+    return mockChatStream(req, handlers);
+  }
+
+  let res: Response;
+  try {
+    res = await fetch(`${API_URL}/chat/stream`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
+      body: JSON.stringify(req),
+    });
+  } catch (e) {
+    handlers.onError(
+      `Could not reach the felix backend at ${API_URL}. Is it running? (${
+        e instanceof Error ? e.message : String(e)
+      })`,
+    );
+    return;
+  }
+
+  if (!res.ok) {
+    const body = await res.text().catch(() => "");
+    handlers.onError(
+      `Backend returned ${res.status} ${res.statusText}${body ? `: ${body.slice(0, 300)}` : ""}`,
+    );
+    return;
+  }
+  if (!res.body) {
+    handlers.onError("Streaming response had no body.");
+    return;
+  }
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buffer = "";
+  try {
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      // SSE frames are separated by a blank line. Dispatch each complete frame
+      // and keep any trailing partial frame in the buffer for the next chunk.
+      let sep: number;
+      while ((sep = buffer.indexOf("\n\n")) !== -1) {
+        const frame = buffer.slice(0, sep);
+        buffer = buffer.slice(sep + 2);
+        dispatchFrame(frame, handlers);
+      }
+    }
+  } catch (e) {
+    handlers.onError(
+      `Stream interrupted: ${e instanceof Error ? e.message : String(e)}`,
+    );
+  }
+}
+
+/** Parse one SSE frame (`event:` + one or more `data:` lines) and route it. */
+function dispatchFrame(frame: string, handlers: StreamHandlers): void {
+  let event = "message";
+  const dataLines: string[] = [];
+  for (const line of frame.split("\n")) {
+    if (line.startsWith("event:")) event = line.slice(6).trim();
+    else if (line.startsWith("data:")) dataLines.push(line.slice(5).replace(/^ /, ""));
+  }
+  if (dataLines.length === 0) return;
+
+  let data: unknown;
+  try {
+    data = JSON.parse(dataLines.join("\n"));
+  } catch {
+    return; // ignore an unparseable frame rather than killing the stream
+  }
+
+  const d = data as Record<string, unknown>;
+  if (event === "evidence") handlers.onEvidence?.(d.evidence as ChatResponse["evidence"]);
+  else if (event === "delta") handlers.onDelta?.(String(d.text ?? ""));
+  else if (event === "done") handlers.onDone(data as ChatResponse);
+  else if (event === "error") handlers.onError(String(d.error ?? "stream error"));
 }

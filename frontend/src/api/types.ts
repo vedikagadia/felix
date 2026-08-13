@@ -131,3 +131,16 @@ export interface ChatResponse {
   /** The conversation this turn belongs to; echo it on the next request to continue. */
   session_id?: string | null;
 }
+
+/**
+ * Callbacks for the streaming path (POST /chat/stream, Server-Sent Events).
+ * `onEvidence` fires once as soon as recall completes (so the evidence panel
+ * fills while the model is still reasoning); `onDelta` fires for each chunk of
+ * the model's output; exactly one of `onDone` / `onError` terminates the stream.
+ */
+export interface StreamHandlers {
+  onEvidence?: (evidence: EvidencePacket) => void;
+  onDelta?: (text: string) => void;
+  onDone: (response: ChatResponse) => void;
+  onError: (message: string) => void;
+}

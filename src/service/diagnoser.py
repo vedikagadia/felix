@@ -18,7 +18,7 @@ import re
 from typing import Any
 
 from ..clients.llm import LLMClient
-from ..models import ActiveIncidentTurn, Diagnosis, DiagnosisResult, EvidencePacket, ResolutionStep
+from ..models import ActiveIncidentTurn, Diagnosis, DiagnosisResult, EvidencePacket, LLMResult, ResolutionStep
 from ..store.repositories import ActionRepository, ActiveIncidentRepository, IncidentRepository
 from .evidence_gatherer import EvidenceGatherer
 
@@ -108,11 +108,77 @@ class IncidentDiagnoser:
         opens a session so subsequent turns can continue it. The returned
         `DiagnosisResult.session_id` is the conversation to echo on the next turn.
         """
+        # Steps 0-2: load prior conversation + recall + origin resolution.
+        packet, resolved_service, session = self._prepare(alert, origin_node, k, session_id)
+
+        # 3. BUILD PROMPT (folding in the prior transcript on follow-ups).
+        prompt = self._build_prompt(packet, history=session.turns if session else None)
+
+        # 4. REASON. Let exceptions from the LLM propagate untouched — no writes
+        # have happened yet, so a failed call leaves no partial rows.
+        result = self.llm.complete(prompt, system=_SYSTEM_PROMPT)
+
+        # 5. PARSE DEFENSIVELY + citation-integrity guard.
+        diagnosis = self._parse_diagnosis(result.text, packet)
+
+        # 6-7. WRITE-BACK + return (shared with the streaming path).
+        return self._finish(alert, origin_node, resolved_service, diagnosis, result, packet, session)
+
+    def respond_stream(
+        self,
+        alert: str,
+        origin_node: str | None = None,
+        k: int = 3,
+        session_id: str | None = None,
+    ):
+        """Streaming variant of `respond()` — a generator yielding typed events
+        so a transport (the SSE endpoint) can forward progress live. Same loop,
+        same write-back; only the LLM step is streamed instead of awaited whole.
+
+        Yields, in order:
+          ("evidence", EvidencePacket)  — once, right after recall + origin
+              resolution, so the UI's evidence panel fills while the model thinks.
+          ("delta", str)                — zero or more raw text deltas as the LLM
+              generates (their concatenation is the full completion).
+          ("done", DiagnosisResult)     — once, after the SAME defensive parse,
+              citation guard, and atomic write-back as `respond()`.
+
+        Exceptions propagate to the caller (the endpoint maps them to an SSE
+        `error` frame). As with `respond()`, the LLM runs before any write, so a
+        failure mid-stream leaves no partial rows.
+        """
+        packet, resolved_service, session = self._prepare(alert, origin_node, k, session_id)
+        yield ("evidence", packet)
+
+        prompt = self._build_prompt(packet, history=session.turns if session else None)
+
+        # Stream the completion, forwarding each delta and accumulating the full
+        # text to parse once the stream ends (identical parse to respond()).
+        chunks: list[str] = []
+        for delta in self.llm.stream(prompt, system=_SYSTEM_PROMPT):
+            chunks.append(delta)
+            yield ("delta", delta)
+        full_text = "".join(chunks)
+
+        # Streaming doesn't hand back an LLMResult, so reconstruct one for the
+        # write-back/audit (model id from the client; token counts unavailable
+        # mid-stream, so left None — the audit still records model + output).
+        result = LLMResult(text=full_text, model=self.llm.model_id, input_tokens=None, output_tokens=None)
+        diagnosis = self._parse_diagnosis(full_text, packet)
+
+        yield ("done", self._finish(alert, origin_node, resolved_service, diagnosis, result, packet, session))
+
+    def _prepare(
+        self, alert: str, origin_node: str | None, k: int, session_id: str | None
+    ) -> tuple[EvidencePacket, str | None, Any]:
+        """Steps 0-2 shared by `respond()` and `respond_stream()`: load any prior
+        conversation, recall, and run Option-B origin resolution. Returns the
+        gathered packet (with any upstream trace attached), the resolved service
+        for the incident row, and the loaded session (None on a first turn)."""
         # 0. CONTINUE? Load prior conversation if we're resuming a known session.
         session = None
         if session_id is not None and self.active_repo is not None:
             session = self.active_repo.get_session(session_id)
-        is_follow_up = session is not None
 
         # 1. RECALL. If origin_node is given explicitly, EvidenceGatherer.gather
         # already runs the upstream trace itself (it accepts origin_node and does
@@ -132,29 +198,34 @@ class IncidentDiagnoser:
         if resolved_service is None:
             resolved_service = self._infer_service_from_top_incident(packet)
 
-        # 3. BUILD PROMPT (folding in the prior transcript on follow-ups).
-        prompt = self._build_prompt(packet, history=session.turns if session else None)
+        return packet, resolved_service, session
 
-        # 4. REASON. Let exceptions from the LLM propagate untouched — no writes
-        # have happened yet, so a failed call leaves no partial rows.
-        result = self.llm.complete(prompt, system=_SYSTEM_PROMPT)
-
-        # 5. PARSE DEFENSIVELY + citation-integrity guard.
-        diagnosis = self._parse_diagnosis(result.text, packet)
+    def _finish(
+        self,
+        alert: str,
+        origin_node: str | None,
+        resolved_service: str | None,
+        diagnosis: Diagnosis,
+        result,
+        packet: EvidencePacket,
+        session,
+    ) -> DiagnosisResult:
+        """Steps 6-7 shared by both paths: atomic write-back (split by turn kind)
+        then return the DiagnosisResult with the session id to continue."""
         total_tokens = (result.input_tokens or 0) + (result.output_tokens or 0)
 
-        # 6. WRITE-BACK — split by turn kind, each in ONE transaction so a
+        # WRITE-BACK — split by turn kind, each in ONE transaction so a
         # mid-sequence failure rolls back cleanly (no orphan rows). The repos
         # share the single connection, so one transaction spans all writes.
-        if is_follow_up:
+        if session is not None:
             result_session_id = self._write_follow_up(session, alert, diagnosis, result, total_tokens)
         else:
             result_session_id = self._write_first_turn(
                 alert, origin_node, resolved_service, diagnosis, result, total_tokens
             )
 
-        # 7. return the diagnosis + the evidence it reasoned over + the session
-        # to continue (packet.upstream now reflects any Option-B trace above).
+        # return the diagnosis + the evidence it reasoned over + the session to
+        # continue (packet.upstream now reflects any Option-B trace above).
         return DiagnosisResult(diagnosis=diagnosis, evidence=packet, session_id=result_session_id)
 
     def _write_first_turn(

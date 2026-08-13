@@ -12,16 +12,24 @@ Run it with `python -m src serve` (see cli.py) or, for autoreload during dev:
 
 from __future__ import annotations
 
+import json
 import os
 
 from fastapi import Depends, FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
 
 from ..config import get_settings
 from ..service.evidence_gatherer import EvidenceGatherer
 from ..store.connection import get_conn
-from .schemas import packet_to_dict, result_to_dict
+from .schemas import diagnosis_to_dict, packet_to_dict, result_to_dict
+
+
+def _sse(event: str, data: dict) -> str:
+    """Format one Server-Sent Events frame: a named event + a JSON data line.
+    Frames are separated by a blank line, per the SSE spec."""
+    return f"event: {event}\ndata: {json.dumps(data)}\n\n"
 
 
 class ChatRequest(BaseModel):
@@ -113,6 +121,77 @@ def create_app() -> FastAPI:
             req.alert, origin_node=req.origin_node, k=req.k, session_id=req.session_id
         )
         return result_to_dict(result)
+
+    @app.post("/chat/stream")
+    def chat_stream(req: ChatRequest, conn=Depends(db_conn)) -> StreamingResponse:
+        """Streaming twin of /chat: the full loop, but the diagnosis is delivered
+        as Server-Sent Events so the UI can show recall + reasoning live.
+
+        Frames (each `event:`/`data:` pair):
+          evidence — {"evidence": EvidencePacket} once, after recall (fills the
+              evidence panel while the model is still generating)
+          delta    — {"text": "..."} for each chunk of the model's output
+          done     — {"diagnosis", "evidence", "session_id"} — same envelope as
+              /chat, after parse + write-back
+          error    — {"error": "..."} if the loop raises mid-stream
+
+        Same 503 contract as /chat when the LLM isn't configured."""
+        settings = get_settings()
+        if settings.llm_provider == "gemini" and not settings.gemini_api_key:
+            raise HTTPException(
+                status_code=503,
+                detail="LLM not configured: set GEMINI_API_KEY (or switch LLM_PROVIDER). "
+                "Use POST /recall for evidence without a diagnosis.",
+            )
+
+        from ..clients.llm import get_llm
+        from ..service.diagnoser import IncidentDiagnoser
+        from ..store.repositories import (
+            ActionRepository,
+            ActiveIncidentRepository,
+            IncidentRepository,
+        )
+
+        gatherer = EvidenceGatherer(conn)
+        diagnoser = IncidentDiagnoser(
+            gatherer,
+            get_llm(),
+            IncidentRepository(conn),
+            ActionRepository(conn),
+            ActiveIncidentRepository(conn),
+        )
+
+        def event_stream():
+            # The connection is owned by the db_conn dependency and closed when
+            # this generator is exhausted (StreamingResponse drives it to the
+            # end). Map each service event to an SSE frame; surface any error as
+            # a terminal `error` frame instead of a bare 500 mid-stream.
+            try:
+                for kind, payload in diagnoser.respond_stream(
+                    req.alert, origin_node=req.origin_node, k=req.k, session_id=req.session_id
+                ):
+                    if kind == "evidence":
+                        yield _sse("evidence", {"evidence": packet_to_dict(payload)})
+                    elif kind == "delta":
+                        yield _sse("delta", {"text": payload})
+                    elif kind == "done":
+                        yield _sse(
+                            "done",
+                            {
+                                "diagnosis": diagnosis_to_dict(payload.diagnosis),
+                                "evidence": packet_to_dict(payload.evidence),
+                                "session_id": payload.session_id,
+                            },
+                        )
+            except Exception as e:  # noqa: BLE001 - report any failure to the client, don't 500 mid-stream
+                yield _sse("error", {"error": str(e)})
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            # Disable proxy buffering so deltas reach the browser as they're sent.
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     return app
 

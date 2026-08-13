@@ -1,6 +1,6 @@
 import { useState } from "react";
-import type { ChatRequest, ChatResponse } from "./api/types";
-import { sendChat, usingMock, ApiError } from "./api/client";
+import type { ChatRequest, ChatResponse, EvidencePacket } from "./api/types";
+import { sendChatStream, usingMock } from "./api/client";
 import { AlertComposer } from "./components/AlertComposer";
 import { ChatThread } from "./components/ChatThread";
 import { EvidencePanel } from "./components/EvidencePanel";
@@ -9,6 +9,10 @@ export interface Turn {
   id: number;
   request: ChatRequest;
   response?: ChatResponse;
+  /** Recall result, delivered before `response` while the model still streams. */
+  evidence?: EvidencePacket;
+  /** The model's output as it streams in, before the final parsed diagnosis. */
+  streamingText?: string;
   error?: string;
   pending: boolean;
 }
@@ -37,17 +41,29 @@ export function App() {
     setActiveId(id);
     setBusy(true);
 
+    // Stream the turn: evidence fills the panel first, deltas render live, then
+    // the final response swaps in the parsed diagnosis. onDone/onError are
+    // terminal; setBusy is cleared once the stream settles.
     try {
-      const response = await sendChat(outbound);
-      // Adopt the conversation id so the next message is a follow-up.
-      setSessionId(response.session_id ?? null);
-      setTurns((prev) =>
-        prev.map((t) => (t.id === id ? { ...t, response, pending: false } : t)),
-      );
-    } catch (e) {
-      const error =
-        e instanceof ApiError ? e.message : e instanceof Error ? e.message : String(e);
-      setTurns((prev) => prev.map((t) => (t.id === id ? { ...t, error, pending: false } : t)));
+      await sendChatStream(outbound, {
+        onEvidence: (evidence) =>
+          setTurns((prev) => prev.map((t) => (t.id === id ? { ...t, evidence } : t))),
+        onDelta: (text) =>
+          setTurns((prev) =>
+            prev.map((t) =>
+              t.id === id ? { ...t, streamingText: (t.streamingText ?? "") + text } : t,
+            ),
+          ),
+        onDone: (response) => {
+          // Adopt the conversation id so the next message is a follow-up.
+          setSessionId(response.session_id ?? null);
+          setTurns((prev) =>
+            prev.map((t) => (t.id === id ? { ...t, response, pending: false } : t)),
+          );
+        },
+        onError: (error) =>
+          setTurns((prev) => prev.map((t) => (t.id === id ? { ...t, error, pending: false } : t))),
+      });
     } finally {
       setBusy(false);
     }

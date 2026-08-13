@@ -15,6 +15,7 @@ export function ChatThread({
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ behavior: "smooth" });
+    // Depend on the streaming text too, so the view follows tokens as they land.
   }, [turns]);
 
   if (turns.length === 0) {
@@ -49,7 +50,10 @@ export function ChatThread({
           <div className="msg msg--agent">
             <div className="msg__role">felix</div>
             <div className="msg__bubble">
-              {turn.pending && <ThinkingDots />}
+              {turn.pending && !turn.streamingText && <ThinkingDots />}
+              {turn.pending && turn.streamingText && (
+                <StreamingReasoning text={turn.streamingText} />
+              )}
               {turn.error && <div className="error">{turn.error}</div>}
               {turn.response && (
                 <DiagnosisCard
@@ -71,6 +75,23 @@ function ThinkingDots() {
   return (
     <div className="thinking">
       recalling memory<span className="thinking__dots" />
+    </div>
+  );
+}
+
+/**
+ * The model's output as it streams in, before the parsed DiagnosisCard swaps in.
+ * The backend streams a raw JSON diagnosis, so this shows felix "drafting" —
+ * honest and lively for a demo. A blinking caret marks the live edge.
+ */
+function StreamingReasoning({ text }: { text: string }) {
+  return (
+    <div className="streaming">
+      <div className="streaming__label">drafting diagnosis…</div>
+      <pre className="streaming__text">
+        {text}
+        <span className="streaming__caret" />
+      </pre>
     </div>
   );
 }

@@ -9,7 +9,9 @@
  * Delete this file (and its use in client.ts) once the real backend is wired.
  */
 
-import type { ChatRequest, ChatResponse } from "./types";
+import type { ChatRequest, ChatResponse, StreamHandlers } from "./types";
+
+const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const POOL_SCENARIO: ChatResponse = {
   diagnosis: {
@@ -225,10 +227,8 @@ function newMockSessionId(): string {
   return `mock-session-${mockSession}`;
 }
 
-/** Pick a canned scenario from alert keywords. Simulates network latency. */
-export async function mockChat(req: ChatRequest): Promise<ChatResponse> {
-  await new Promise((r) => setTimeout(r, 550));
-
+/** Pick a canned scenario from alert keywords (no artificial latency). */
+function resolveScenario(req: ChatRequest): ChatResponse {
   // Follow-up within an open conversation.
   if (req.session_id) {
     return followUpScenario(req);
@@ -243,4 +243,28 @@ export async function mockChat(req: ChatRequest): Promise<ChatResponse> {
     return { ...LATENCY_SCENARIO, session_id, evidence: { ...LATENCY_SCENARIO.evidence, alert: req.alert } };
   }
   return { ...genericScenario(req), session_id };
+}
+
+/** Pick a canned scenario from alert keywords. Simulates network latency. */
+export async function mockChat(req: ChatRequest): Promise<ChatResponse> {
+  await sleep(550);
+  return resolveScenario(req);
+}
+
+/**
+ * Streaming mock: mirrors the real `/chat/stream` sequence — evidence first,
+ * then the summary dribbled out word-by-word as deltas, then done — so the
+ * live-reasoning UI can be developed with no backend. (The real backend streams
+ * the model's raw JSON; mock streams the prose summary for a nicer preview.)
+ */
+export async function mockChatStream(req: ChatRequest, handlers: StreamHandlers): Promise<void> {
+  const response = resolveScenario(req);
+  await sleep(300);
+  handlers.onEvidence?.(response.evidence);
+  for (const word of response.diagnosis.summary.split(/(\s+)/)) {
+    await sleep(28);
+    handlers.onDelta?.(word);
+  }
+  await sleep(150);
+  handlers.onDone(response);
 }

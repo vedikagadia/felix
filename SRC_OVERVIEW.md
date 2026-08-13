@@ -79,7 +79,10 @@ repository layer. Key ones:
   schema.
 - **`llm/`**: `LLMClient` ABC + `get_llm()`. `gemini.py` (default) and
   `bedrock.py` (Claude). Note `gemini.py`'s careful handling of `response.text`
-  raising on SAFETY/MAX_TOKENS.
+  raising on SAFETY/MAX_TOKENS. Besides `complete()`, the ABC has a `stream()`
+  that yields text deltas — Gemini overrides it with real `generate_content(
+  stream=True)`; the ABC's default just yields the whole `complete()` result
+  once, so Bedrock streams (degenerately) without extra code.
 - **`cockroach_mcp.py`**: thin async client for the CockroachDB Managed MCP
   Server — a stretch/spike, gated on live creds.
 
@@ -92,8 +95,13 @@ importing the package is always safe without AWS/Gemini/MCP configured.
   `EvidencePacket`. Fully deterministic; stops before the LLM.
 - **`diagnoser.py`**: `IncidentDiagnoser` — the *reasoning half*. Its
   `respond(alert, session_id=None)` runs the loop and returns a `DiagnosisResult`
-  (diagnosis + packet + session); `diagnose()` is a back-compat wrapper returning
-  just the `Diagnosis`. The loop:
+  (diagnosis + packet + session); `respond_stream(...)` is the generator twin
+  that yields `("evidence", packet)` → `("delta", str)*` → `("done", result)`
+  for the SSE endpoint (same recall, prompt, parse, and atomic write-back — only
+  the LLM step is streamed, via `LLMClient.stream()`); `diagnose()` is a
+  back-compat wrapper returning just the `Diagnosis`. Steps 0-2 (recall + origin
+  resolution) live in a shared `_prepare()` and write-back in a shared
+  `_finish()`, so the blocking and streaming paths can't drift. The loop:
   0. **continue?** if `session_id` names a known conversation (and an
      `active_repo` is wired), load its transcript — this turn is a follow-up
   1. recall (via the gatherer — runs every turn so the evidence panel stays live)
@@ -120,9 +128,13 @@ A thin adapter over the service layer, parallel to the CLI — no business logic
   `async def`) so FastAPI runs the blocking psycopg/LLM calls in a threadpool.
   Endpoints: `POST /chat` → `{diagnosis, evidence, session_id}` (full loop via
   `IncidentDiagnoser.respond`; accepts an optional `session_id` in the body to
-  continue a conversation as a follow-up), `POST /recall` → `{evidence}`
-  (retrieval only, the `--no-llm` equivalent), `GET /health`. `/chat` returns 503
-  if the LLM isn't configured.
+  continue a conversation as a follow-up), `POST /chat/stream` → **Server-Sent
+  Events** (the same loop via `respond_stream`, streamed live: an `evidence`
+  frame the moment recall finishes, `delta` frames as the model generates, then
+  a `done` frame carrying the same `{diagnosis, evidence, session_id}` envelope
+  after parse + write-back; an `error` frame on failure), `POST /recall` →
+  `{evidence}` (retrieval only, the `--no-llm` equivalent), `GET /health`. Both
+  `/chat` and `/chat/stream` return 503 if the LLM isn't configured.
 - **`schemas.py`**: serializes domain models to the JSON contract in
   `frontend/src/api/types.ts` (recalls → `{item, distance}`, graph hits →
   `{node, depth}`, datetimes → ISO strings).
@@ -156,4 +168,9 @@ repositories, and diagnoser together.
 - **The frontend and API share one contract.** `frontend/src/api/types.ts`
   mirrors `models.py`; `api/schemas.py` produces exactly that shape. Change one,
   change all three.
+- **Streaming is client-parsed SSE, not EventSource.** EventSource can't POST a
+  body, so `frontend/src/api/client.ts`'s `sendChatStream` reads the response as
+  a `ReadableStream` and parses `event:`/`data:` frames by hand into
+  `StreamHandlers` callbacks. Mock mode (`mock.ts`) simulates the same
+  evidence→deltas→done sequence, so the live-reasoning UI works with no backend.
 </content>
