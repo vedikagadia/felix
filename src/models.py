@@ -139,10 +139,43 @@ class DiagnosisResult:
     `IncidentResponder.respond()` returns this so a single gather serves both
     the diagnosis and the evidence display (the CLI's blocks [1]-[5], the API's
     /chat response). `IncidentResponder.diagnose()` still returns just the
-    `Diagnosis` for callers that don't need the packet."""
+    `Diagnosis` for callers that don't need the packet.
+
+    `session_id` is the working-memory `active_incidents.id` this turn belongs
+    to — returned so the caller can echo it on the next turn to continue the
+    same conversation (multi-turn follow-ups)."""
 
     diagnosis: Diagnosis
     evidence: EvidencePacket
+    session_id: str | None = None
+
+
+# ── working memory: active incident conversations ────────────────────────────
+
+
+@dataclass
+class ActiveIncidentTurn:
+    """One message in an active-incident conversation transcript."""
+
+    turn_order: int
+    role: str  # "user" | "agent"
+    content: str
+
+
+@dataclass
+class ActiveIncident:
+    """A live, in-flight incident conversation (working memory).
+
+    Distinct from `Incident` (episodic long-term memory): this is the session
+    the multi-turn loop appends turns to, linked to the episodic `incident_id`
+    written on the first diagnosis."""
+
+    id: str
+    alert: str
+    origin_node: str | None = None
+    incident_id: str | None = None
+    status: str = "open"
+    turns: list[ActiveIncidentTurn] = field(default_factory=list)
 
 
 @dataclass

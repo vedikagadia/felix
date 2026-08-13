@@ -117,9 +117,17 @@ export interface ChatRequest {
   origin_node?: string | null;
   /** Optional: results per source (defaults to backend's choice, e.g. 3). */
   k?: number;
+  /**
+   * Optional: an active-incident conversation id from a prior ChatResponse.
+   * Set it to ask a follow-up in the same conversation (multi-turn); omit it
+   * to open a fresh incident.
+   */
+  session_id?: string | null;
 }
 
 export interface ChatResponse {
   diagnosis: Diagnosis;
   evidence: EvidencePacket;
+  /** The conversation this turn belongs to; echo it on the next request to continue. */
+  session_id?: string | null;
 }

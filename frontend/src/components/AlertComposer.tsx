@@ -9,9 +9,15 @@ const EXAMPLES = [
 export function AlertComposer({
   onSubmit,
   disabled,
+  continuing = false,
+  onNewIncident,
 }: {
   onSubmit: (req: ChatRequest) => void;
   disabled: boolean;
+  /** True when a conversation is open — the next message is a follow-up. */
+  continuing?: boolean;
+  /** Clear the conversation so the next message opens a fresh incident. */
+  onNewIncident?: () => void;
 }) {
   const [alert, setAlert] = useState("");
   const [originNode, setOriginNode] = useState("");
@@ -38,26 +44,46 @@ export function AlertComposer({
 
   return (
     <div className="composer">
-      {alert.trim() === "" && (
-        <div className="composer__examples">
-          {EXAMPLES.map((ex) => (
-            <button
-              key={ex}
-              type="button"
-              className="chip"
-              disabled={disabled}
-              onClick={() => setAlert(ex)}
-            >
-              {ex}
-            </button>
-          ))}
+      {continuing ? (
+        <div className="composer__session">
+          <span className="composer__session-note">
+            Following up on the current incident — felix remembers the conversation.
+          </span>
+          <button
+            type="button"
+            className="composer__new"
+            disabled={disabled}
+            onClick={onNewIncident}
+          >
+            + New incident
+          </button>
         </div>
+      ) : (
+        alert.trim() === "" && (
+          <div className="composer__examples">
+            {EXAMPLES.map((ex) => (
+              <button
+                key={ex}
+                type="button"
+                className="chip"
+                disabled={disabled}
+                onClick={() => setAlert(ex)}
+              >
+                {ex}
+              </button>
+            ))}
+          </div>
+        )
       )}
 
       <div className="composer__row">
         <textarea
           className="composer__input"
-          placeholder="Paste an alert or describe the symptom… (Enter to send, Shift+Enter for newline)"
+          placeholder={
+            continuing
+              ? "Ask a follow-up… e.g. “did scaling the DB help?” (Enter to send)"
+              : "Paste an alert or describe the symptom… (Enter to send, Shift+Enter for newline)"
+          }
           value={alert}
           rows={2}
           disabled={disabled}
@@ -65,7 +91,7 @@ export function AlertComposer({
           onKeyDown={onKeyDown}
         />
         <button className="btn btn--send" onClick={fire} disabled={disabled || !alert.trim()}>
-          {disabled ? "…" : "Diagnose"}
+          {disabled ? "…" : continuing ? "Follow up" : "Diagnose"}
         </button>
       </div>
 

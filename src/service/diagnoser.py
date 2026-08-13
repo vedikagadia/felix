@@ -18,8 +18,8 @@ import re
 from typing import Any
 
 from ..clients.llm import LLMClient
-from ..models import Diagnosis, DiagnosisResult, EvidencePacket, ResolutionStep
-from ..store.repositories import ActionRepository, IncidentRepository
+from ..models import ActiveIncidentTurn, Diagnosis, DiagnosisResult, EvidencePacket, ResolutionStep
+from ..store.repositories import ActionRepository, ActiveIncidentRepository, IncidentRepository
 from .evidence_gatherer import EvidenceGatherer
 
 # Below this L2 distance, the top recalled incident/doc is considered "close
@@ -69,11 +69,16 @@ class IncidentDiagnoser:
         llm: LLMClient,
         incident_repo: IncidentRepository,
         action_repo: ActionRepository,
+        active_repo: ActiveIncidentRepository | None = None,
     ):
         self.gatherer = gatherer
         self.llm = llm
         self.incident_repo = incident_repo
         self.action_repo = action_repo
+        # Working memory (multi-turn). Optional: when None, respond() behaves
+        # exactly as the original single-turn loop (no session is created and
+        # `session_id` stays None) — keeps existing callers/tests unchanged.
+        self.active_repo = active_repo
 
     # ── the loop ─────────────────────────────────────────────────────────────
 
@@ -86,10 +91,33 @@ class IncidentDiagnoser:
         a single gather serves both."""
         return self.respond(alert, origin_node=origin_node, k=k).diagnosis
 
-    def respond(self, alert: str, origin_node: str | None = None, k: int = 3) -> DiagnosisResult:
+    def respond(
+        self,
+        alert: str,
+        origin_node: str | None = None,
+        k: int = 3,
+        session_id: str | None = None,
+    ) -> DiagnosisResult:
+        """Run one turn of the loop.
+
+        When `session_id` names an existing active-incident conversation (and an
+        `active_repo` is wired), this is a FOLLOW-UP: the prior transcript is fed
+        into the prompt and the turn is recorded in working memory ONLY — no new
+        episodic incident is minted. Otherwise it's the FIRST turn: it writes an
+        episodic `incidents` row (as before) and, if working memory is enabled,
+        opens a session so subsequent turns can continue it. The returned
+        `DiagnosisResult.session_id` is the conversation to echo on the next turn.
+        """
+        # 0. CONTINUE? Load prior conversation if we're resuming a known session.
+        session = None
+        if session_id is not None and self.active_repo is not None:
+            session = self.active_repo.get_session(session_id)
+        is_follow_up = session is not None
+
         # 1. RECALL. If origin_node is given explicitly, EvidenceGatherer.gather
         # already runs the upstream trace itself (it accepts origin_node and does
-        # so internally) — no need to duplicate that here.
+        # so internally) — no need to duplicate that here. We recall on every
+        # turn (incl. follow-ups) so the evidence panel stays populated.
         packet = self.gatherer.gather(alert, origin_node=origin_node, k=k)
 
         # 2. ORIGIN-NODE RESOLUTION (Option B) — only when the caller didn't
@@ -104,8 +132,8 @@ class IncidentDiagnoser:
         if resolved_service is None:
             resolved_service = self._infer_service_from_top_incident(packet)
 
-        # 3. BUILD PROMPT.
-        prompt = self._build_prompt(packet)
+        # 3. BUILD PROMPT (folding in the prior transcript on follow-ups).
+        prompt = self._build_prompt(packet, history=session.turns if session else None)
 
         # 4. REASON. Let exceptions from the LLM propagate untouched — no writes
         # have happened yet, so a failed call leaves no partial rows.
@@ -113,22 +141,39 @@ class IncidentDiagnoser:
 
         # 5. PARSE DEFENSIVELY + citation-integrity guard.
         diagnosis = self._parse_diagnosis(result.text, packet)
-
-        # 6. WRITE-BACK — only now that we have a parsed Diagnosis.
-        # diagnosis.proposed_steps is typed list[str] in models.py, but at
-        # runtime holds whatever the model returned for "proposed_steps" —
-        # list[str] OR list[dict] per the contract's schema — so convert
-        # defensively rather than assuming either shape.
-        title = self._derive_title(alert)
-        steps = self._to_resolution_steps(diagnosis.proposed_steps)
         total_tokens = (result.input_tokens or 0) + (result.output_tokens or 0)
 
-        # All three writes (incident, its steps, the audit row) go in ONE
-        # transaction so a mid-sequence failure rolls back cleanly instead of
-        # leaving an orphan incident with partial/no steps. The repos share the
-        # single connection built in cli.py; connection.py documents
-        # `with conn.transaction():` as the boundary idiom (autocommit is on
-        # otherwise, which is what previously stranded orphan rows).
+        # 6. WRITE-BACK — split by turn kind, each in ONE transaction so a
+        # mid-sequence failure rolls back cleanly (no orphan rows). The repos
+        # share the single connection, so one transaction spans all writes.
+        if is_follow_up:
+            result_session_id = self._write_follow_up(session, alert, diagnosis, result, total_tokens)
+        else:
+            result_session_id = self._write_first_turn(
+                alert, origin_node, resolved_service, diagnosis, result, total_tokens
+            )
+
+        # 7. return the diagnosis + the evidence it reasoned over + the session
+        # to continue (packet.upstream now reflects any Option-B trace above).
+        return DiagnosisResult(diagnosis=diagnosis, evidence=packet, session_id=result_session_id)
+
+    def _write_first_turn(
+        self,
+        alert: str,
+        origin_node: str | None,
+        resolved_service: str | None,
+        diagnosis: Diagnosis,
+        result,
+        total_tokens: int,
+    ) -> str | None:
+        """First turn: mint an episodic incident (+ steps + audit), and — if
+        working memory is enabled — open a session and seed its transcript.
+        Returns the new session id (None when working memory is disabled)."""
+        # diagnosis.proposed_steps holds whatever the model returned —
+        # list[str] OR list[dict] per the schema — so coerce defensively.
+        title = self._derive_title(alert)
+        steps = self._to_resolution_steps(diagnosis.proposed_steps)
+        session_id: str | None = None
         with self.incident_repo.conn.transaction():
             incident_id = self.incident_repo.insert_minimal(
                 title=title,
@@ -140,6 +185,13 @@ class IncidentDiagnoser:
                 self.incident_repo.add_resolution_steps(incident_id, steps)
             diagnosis.incident_id = incident_id
 
+            if self.active_repo is not None:
+                session_id = self.active_repo.create_session(
+                    alert=alert, origin_node=origin_node, incident_id=incident_id
+                )
+                self.active_repo.append_turn(session_id, role="user", content=alert)
+                self.active_repo.append_turn(session_id, role="agent", content=diagnosis.summary)
+
             self.action_repo.log(
                 action_type="diagnose",
                 tool_called="respond",
@@ -147,15 +199,32 @@ class IncidentDiagnoser:
                 # and writes it verbatim to the JSONB column — a bare alert
                 # string isn't valid JSON, so wrap it in a dict (which log
                 # json.dumps's for us).
-                input={"alert": alert},
+                input={"alert": alert, "session_id": session_id},
                 output=_diagnosis_to_dict(diagnosis),
                 model=result.model,
                 tokens=total_tokens or None,
             )
+        return session_id
 
-        # 7. return the diagnosis together with the evidence it reasoned over
-        # (packet.upstream now reflects any Option-B trace resolved above).
-        return DiagnosisResult(diagnosis=diagnosis, evidence=packet)
+    def _write_follow_up(
+        self, session, alert: str, diagnosis: Diagnosis, result, total_tokens: int
+    ) -> str:
+        """Follow-up turn: record the exchange in working memory only (no new
+        episodic incident). Carries the session's original incident id onto the
+        diagnosis so the UI still links to the incident being discussed."""
+        diagnosis.incident_id = session.incident_id
+        with self.incident_repo.conn.transaction():
+            self.active_repo.append_turn(session.id, role="user", content=alert)
+            self.active_repo.append_turn(session.id, role="agent", content=diagnosis.summary)
+            self.action_repo.log(
+                action_type="follow_up",
+                tool_called="respond",
+                input={"alert": alert, "session_id": session.id},
+                output=_diagnosis_to_dict(diagnosis),
+                model=result.model,
+                tokens=total_tokens or None,
+            )
+        return session.id
 
     # ── origin-node resolution ───────────────────────────────────────────────
 
@@ -195,7 +264,9 @@ class IncidentDiagnoser:
 
     # ── prompt construction ──────────────────────────────────────────────────
 
-    def _build_prompt(self, packet: EvidencePacket) -> str:
+    def _build_prompt(
+        self, packet: EvidencePacket, history: list[ActiveIncidentTurn] | None = None
+    ) -> str:
         # CITATION-ID DECISION: Recall[Incident].item.id / Recall[CodeChange].item.id
         # are UUIDs (seed rows are stored with a uuid5 of the human id, e.g.
         # uuid5(NS, "inc-0001") — see seed/loader.py's _seed_uuid), and nothing
@@ -211,7 +282,20 @@ class IncidentDiagnoser:
         # the retrieval-facing id gap the contract flags for the orchestrator:
         # a follow-up (Team C) could add a human-id passthrough so citations
         # read as "inc-0001" instead of a UUID.
-        sections: list[str] = [f"Alert: {packet.alert}", ""]
+        sections: list[str] = []
+        if history:
+            # Follow-up turn: give the model the conversation so far so it
+            # answers the latest message in the context of the incident already
+            # being discussed, rather than treating it as a brand-new alert.
+            sections.append("## Conversation so far (this incident)")
+            for turn in history:
+                speaker = "You (felix)" if turn.role == "agent" else "On-call engineer"
+                sections.append(f"- {speaker}: {turn.content}")
+            sections.append("")
+            sections.append(f"Latest message from the on-call engineer: {packet.alert}")
+        else:
+            sections.append(f"Alert: {packet.alert}")
+        sections.append("")
 
         sections.append("## Similar past incidents (episodic memory)")
         if not packet.incidents:

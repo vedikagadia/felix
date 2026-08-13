@@ -196,15 +196,51 @@ function genericScenario(req: ChatRequest): ChatResponse {
   };
 }
 
+/**
+ * A canned follow-up reply, so mock mode also demonstrates multi-turn: once a
+ * conversation is open (req.session_id set) we answer the follow-up in context
+ * rather than re-diagnosing from scratch. Evidence is left empty — the panel
+ * keeps showing the original turn's evidence.
+ */
+function followUpScenario(req: ChatRequest): ChatResponse {
+  return {
+    session_id: req.session_id,
+    diagnosis: {
+      summary: `(mock) Following up on "${req.alert}": scaling the DB alone won't clear this — the pool, not the DB, is the bottleneck. Release the connection before the payment retry loop and re-check pool checkout p99.`,
+      root_cause: null,
+      proposed_steps: [],
+      cited_incident_ids: [],
+      cited_change_ids: [],
+      confidence: null,
+      incident_id: null,
+    },
+    evidence: { alert: req.alert, incidents: [], docs: [], changes: [], upstream: [] },
+  };
+}
+
+// Deterministic mock session ids (no Date.now/random needed for a demo).
+let mockSession = 0;
+function newMockSessionId(): string {
+  mockSession += 1;
+  return `mock-session-${mockSession}`;
+}
+
 /** Pick a canned scenario from alert keywords. Simulates network latency. */
 export async function mockChat(req: ChatRequest): Promise<ChatResponse> {
   await new Promise((r) => setTimeout(r, 550));
+
+  // Follow-up within an open conversation.
+  if (req.session_id) {
+    return followUpScenario(req);
+  }
+
+  const session_id = newMockSessionId();
   const a = req.alert.toLowerCase();
   if (a.includes("pool") || a.includes("exhaust") || a.includes("connection")) {
-    return { ...POOL_SCENARIO, evidence: { ...POOL_SCENARIO.evidence, alert: req.alert } };
+    return { ...POOL_SCENARIO, session_id, evidence: { ...POOL_SCENARIO.evidence, alert: req.alert } };
   }
   if (a.includes("slow") || a.includes("latency") || a.includes("p99") || a.includes("dashboard")) {
-    return { ...LATENCY_SCENARIO, evidence: { ...LATENCY_SCENARIO.evidence, alert: req.alert } };
+    return { ...LATENCY_SCENARIO, session_id, evidence: { ...LATENCY_SCENARIO.evidence, alert: req.alert } };
   }
-  return genericScenario(req);
+  return { ...genericScenario(req), session_id };
 }

@@ -37,7 +37,9 @@ identity.**
 | Recent merges | `code_changes` | vector search **+ time window** | the "what changed?" signal |
 | Code graph (structural) | `code_nodes` + `code_edges` | graph traversal (WITH RECURSIVE) | ~10% (code-only cases) |
 
-Plus `agent_actions` — an audit log of what the agent did.
+Plus `agent_actions` (audit log of what the agent did) and `active_incidents`
++ `active_incident_turns` (working memory — the live multi-turn conversation an
+incident is being triaged in; see "Multi-turn" below).
 
 Recall = run the vector query against incidents + docs + (time-filtered)
 changes, merge by distance in the app. The code graph is *traversed*, not
@@ -47,7 +49,7 @@ vector-searched.
 
 ```
 sql/
-  schema.sql          # the 7 tables; VECTOR(1024) + vector indexes
+  schema.sql          # the 9 tables; VECTOR(1024) + vector indexes
   seed_dump.sql       # portable data-only dump (154 rows incl. embeddings), re-loadable
 sample_project/
   checkout_service/   # the demo target service (Python; no real logic, just a realistic call graph + logs)
@@ -62,10 +64,10 @@ src/                  # layered: cli/api -> service -> clients/store -> models/c
     cockroach_mcp.py  # thin client for the CockroachDB Managed MCP Server (recall path; later spike)
   store/
     connection.py     # get_conn, apply_schema, vec_literal (VECTOR param helper)
-    repositories/     # one per source: incidents, docs, changes, graph (blast_radius/upstream_callers), actions. Return domain models
+    repositories/     # one per source: incidents, docs, changes, graph (blast_radius/upstream_callers), actions, active (working memory). Return domain models
   service/
     evidence_gatherer.py # EvidenceGatherer(conn, embedder) -> EvidencePacket (retrieval half of the loop)
-    diagnoser.py      # IncidentDiagnoser: respond() -> DiagnosisResult (reason + write-back); diagnose() returns just the Diagnosis
+    diagnoser.py      # IncidentDiagnoser: respond(session_id?) -> DiagnosisResult (reason + write-back, multi-turn aware); diagnose() returns just the Diagnosis
   api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /recall, /health), schemas.py (serialize to the frontend contract)
   seed/
     parser.py         # AST -> code graph (42 nodes / 22 edges), deterministic uuid5 ids
@@ -222,5 +224,25 @@ Not yet built / deferred:
   on re-sync), not versioned history.
 - Embedder and (eventually) reasoning model are **swappable behind an env var**
   so DB/agent work isn't blocked on AWS approvals.
-- `active_incidents` (working memory) intentionally omitted until a multi-turn
-  agent loop needs it.
+- `active_incident_turns` as a child table (not JSONB), mirroring
+  `resolution_steps`, so the transcript stays queryable.
+
+## Multi-turn / working memory
+
+`active_incidents` + `active_incident_turns` are the working-memory tables felix
+uses to hold an in-flight conversation, distinct from the episodic `incidents`
+table. Flow (`IncidentDiagnoser.respond(alert, session_id=None)`):
+
+- **First turn** (no `session_id`): recall → reason → write an episodic
+  `incidents` row (as before) → open an `active_incidents` session linked to
+  that incident and seed its transcript. Returns the new `session_id`.
+- **Follow-up** (`session_id` set): the prior transcript is folded into the
+  prompt so felix answers *in the context of the incident being triaged* (e.g.
+  "did scaling the DB help?"). The exchange is recorded in working memory ONLY —
+  **no new episodic incident per follow-up** (working vs. episodic memory).
+
+`respond()`'s `active_repo` is optional: when it's not wired (the CLI, and the
+write-back tests) the loop is single-turn and `session_id` stays `None` — so
+existing callers are unchanged. The API (`POST /chat`) and the frontend thread
+`session_id` through; the frontend's "＋ New incident" button clears it to start
+a fresh conversation.

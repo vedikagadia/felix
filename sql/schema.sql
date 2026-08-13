@@ -120,5 +120,33 @@ CREATE TABLE IF NOT EXISTS agent_actions (
     tokens       INT
 );
 
--- NOTE: working memory (active_incidents) is intentionally omitted until the multi-turn
--- agent loop exists to use it. See docs/ARCHITECTURE.md.
+-- ── Working memory: active (in-flight) incident conversations ───────────────
+-- One row per ongoing conversation with felix — the multi-turn agent loop's
+-- scratchpad. Distinct from `incidents` (episodic long-term memory): an active
+-- incident is the LIVE session, and it links to the episodic `incidents` row
+-- written on the first diagnosis so follow-ups ("did scaling the DB help?")
+-- reason with the original diagnosis in context. Rows here are transient and
+-- can be pruned once `status = 'resolved'`.
+CREATE TABLE IF NOT EXISTS active_incidents (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),  -- the session id
+    alert       STRING NOT NULL,                              -- the opening alert
+    origin_node STRING,                                       -- code_nodes.name, if pinned
+    incident_id UUID REFERENCES incidents(id) ON DELETE SET NULL,  -- episodic row from turn 1
+    status      STRING NOT NULL DEFAULT 'open',               -- open | resolved
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS active_incidents_status_idx ON active_incidents (status, updated_at DESC);
+
+-- Ordered transcript of one active-incident conversation. Child table (not
+-- JSONB) so turns stay queryable, mirroring resolution_steps' design.
+CREATE TABLE IF NOT EXISTS active_incident_turns (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    session_id  UUID NOT NULL REFERENCES active_incidents(id) ON DELETE CASCADE,
+    turn_order  INT NOT NULL,                                 -- 1, 2, 3 … conversation order
+    role        STRING NOT NULL,                              -- user | agent
+    content     STRING NOT NULL,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (session_id, turn_order)
+);
+CREATE INDEX IF NOT EXISTS active_incident_turns_session_idx ON active_incident_turns (session_id, turn_order);

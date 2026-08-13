@@ -6,6 +6,7 @@ escape this package.
 """
 
 from .actions import ActionRepository
+from .active import ActiveIncidentRepository
 from .changes import ChangeRepository
 from .docs import DocRepository
 from .graph import GraphRepository
@@ -13,6 +14,7 @@ from .incidents import IncidentRepository
 
 __all__ = [
     "ActionRepository",
+    "ActiveIncidentRepository",
     "ChangeRepository",
     "DocRepository",
     "GraphRepository",

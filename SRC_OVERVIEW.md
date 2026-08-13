@@ -41,9 +41,12 @@ repository layer. Key ones:
 - `EvidencePacket` — everything retrieval gathers for one alert (the input to
   reasoning).
 - `Diagnosis` — the reasoning layer's output; `DiagnosisResult` bundles a
-  `Diagnosis` with the `EvidencePacket` it was reasoned over (so one gather
-  serves both the diagnosis and the evidence display). `LLMResult` wraps one LLM
-  completion.
+  `Diagnosis` with the `EvidencePacket` it was reasoned over plus the
+  `session_id` of the conversation it belongs to (so one gather serves both the
+  diagnosis and the evidence display, and callers can continue the thread).
+  `LLMResult` wraps one LLM completion.
+- Working memory: `ActiveIncident` (a live conversation, linked to its episodic
+  `incident_id`) + `ActiveIncidentTurn` (one `user`/`agent` message).
 
 ### `store/` — persistence
 - **`connection.py`**: `get_conn()` (autocommit psycopg3 connection) and the
@@ -66,6 +69,9 @@ repository layer. Key ones:
     best-effort fuzzy name resolution (strips prefixes, drops dotted segments,
     suffix-matches). This is *traversed*, never vector-searched.
   - `actions.py` — append-only `agent_actions` audit log; JSONB in/out.
+  - `active.py` — working memory (`ActiveIncidentRepository`): `create_session`,
+    `get_session` (with transcript), `append_turn` (auto-orders), `set_status`.
+    Backs the multi-turn loop.
 
 ### `clients/` — swappable external SDKs (all lazy-imported)
 - **`embedder/`**: `Embedder` ABC + `get_embedder()`. `titan.py` (Bedrock Titan)
@@ -84,32 +90,39 @@ importing the package is always safe without AWS/Gemini/MCP configured.
 - **`evidence_gatherer.py`**: `EvidenceGatherer.gather()` — the *retrieval half*.
   Embeds the alert once, then fans out to all four repositories, assembling an
   `EvidencePacket`. Fully deterministic; stops before the LLM.
-- **`diagnoser.py`**: `IncidentDiagnoser` — the *reasoning half*. Its `respond()`
-  runs a 7-step loop and returns a `DiagnosisResult` (diagnosis + the packet it
-  reasoned over); `diagnose()` is a back-compat wrapper returning just the
-  `Diagnosis`. The loop:
-  1. recall (via the gatherer)
+- **`diagnoser.py`**: `IncidentDiagnoser` — the *reasoning half*. Its
+  `respond(alert, session_id=None)` runs the loop and returns a `DiagnosisResult`
+  (diagnosis + packet + session); `diagnose()` is a back-compat wrapper returning
+  just the `Diagnosis`. The loop:
+  0. **continue?** if `session_id` names a known conversation (and an
+     `active_repo` is wired), load its transcript — this turn is a follow-up
+  1. recall (via the gatherer — runs every turn so the evidence panel stays live)
   2. **origin-node resolution** (if caller didn't pin one, mine
      code-symbol-shaped tokens from the top *close-match* incident/doc and
      resolve to a real node, then run the upstream trace)
-  3. build a structured prompt
+  3. build a structured prompt (folding in the prior transcript on follow-ups)
   4. call the LLM
   5. **defensive parse** (`_extract_json_object` tolerates fences/prose, never
      raises) with a **citation-integrity guard** (drops any cited id not verbatim
      in the packet)
-  6. **atomic write-back** (minimal incident + resolution_steps + audit row, all
-     in one transaction)
-  7. return the `DiagnosisResult`
+  6. **atomic write-back**, split by turn kind: first turn mints an episodic
+     incident (+ steps + audit) and opens a session; a follow-up records the
+     exchange in working memory ONLY (no new incident) — each in one transaction
+  7. return the `DiagnosisResult` (with the `session_id` to continue)
+
+  `active_repo` is optional: unset (the CLI, the write-back tests) → single-turn,
+  `session_id` stays `None`, behaviour unchanged. The API and frontend thread it.
 
 ### `api/` — HTTP driver (FastAPI)
 A thin adapter over the service layer, parallel to the CLI — no business logic.
 - **`app.py`**: `create_app()` builds the FastAPI app with permissive CORS and a
   per-request connection dependency (`db_conn`). Routes are declared `def` (not
   `async def`) so FastAPI runs the blocking psycopg/LLM calls in a threadpool.
-  Endpoints: `POST /chat` → `{diagnosis, evidence}` (full loop via
-  `IncidentDiagnoser.respond`), `POST /recall` → `{evidence}` (retrieval only,
-  the `--no-llm` equivalent), `GET /health`. `/chat` returns 503 if the LLM isn't
-  configured.
+  Endpoints: `POST /chat` → `{diagnosis, evidence, session_id}` (full loop via
+  `IncidentDiagnoser.respond`; accepts an optional `session_id` in the body to
+  continue a conversation as a follow-up), `POST /recall` → `{evidence}`
+  (retrieval only, the `--no-llm` equivalent), `GET /health`. `/chat` returns 503
+  if the LLM isn't configured.
 - **`schemas.py`**: serializes domain models to the JSON contract in
   `frontend/src/api/types.ts` (recalls → `{item, distance}`, graph hits →
   `{node, depth}`, datetimes → ISO strings).

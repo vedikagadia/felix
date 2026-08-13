@@ -7,8 +7,9 @@ frontend** (chat UI). This is the practical, step-by-step companion to
 
 By the end you'll have:
 
-- a single-node CockroachDB with the 7 tables and 154 seeded rows (incidents,
-  docs, code changes, code graph — embeddings included),
+- a single-node CockroachDB with the 9 tables and 154 seeded rows (incidents,
+  docs, code changes, code graph — embeddings included; the two working-memory
+  tables populate at runtime as you chat),
 - the API at `http://localhost:8000` (`/health`, `/recall`, `/chat`),
 - the frontend at `http://localhost:5173` talking to that API.
 

@@ -59,7 +59,7 @@ def _diagnoser(conn, llm):
         class graph:  # unused here; present so attribute access wouldn't crash
             pass
 
-        def gather(self, alert, origin_node=None):
+        def gather(self, alert, origin_node=None, k=3):
             # a close incident so _infer_service can read it, but no code tokens
             return EvidencePacket(
                 alert=alert,
@@ -127,8 +127,10 @@ def test_audit_row_is_valid_json(conn):
     assert action_type == "diagnose"
     assert tool_called == "respond"
     assert model == "fake-model"
-    # psycopg returns JSONB as already-parsed Python objects
-    assert input_col == {"alert": "some alert text"}
+    # psycopg returns JSONB as already-parsed Python objects. session_id is None
+    # here because this diagnoser is wired without an ActiveIncidentRepository
+    # (single-turn); it records which conversation a diagnosis belongs to.
+    assert input_col == {"alert": "some alert text", "session_id": None}
     assert output_col["summary"] == "s"
 
 

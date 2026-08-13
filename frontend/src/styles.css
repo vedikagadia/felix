@@ -248,6 +248,36 @@ body {
   flex-wrap: wrap;
 }
 
+.composer__session {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 10px;
+}
+
+.composer__session-note {
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.composer__new {
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  font-family: var(--mono);
+  white-space: nowrap;
+}
+
+.composer__new:hover:not(:disabled) {
+  border-color: var(--accent);
+  color: var(--text);
+}
+
 .chip {
   background: var(--bg-elev2);
   border: 1px solid var(--border);

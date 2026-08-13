@@ -31,6 +31,11 @@ class ChatRequest(BaseModel):
         description="code_nodes.name where the symptom surfaces; enables the upstream graph trace.",
     )
     k: int = Field(default=3, ge=1, le=20, description="Results per memory source.")
+    session_id: str | None = Field(
+        default=None,
+        description="Active-incident conversation id from a prior /chat response; "
+        "set it to ask a follow-up in the same conversation (multi-turn).",
+    )
 
 
 def db_conn():
@@ -90,13 +95,23 @@ def create_app() -> FastAPI:
         # lazy-client pattern used across clients/.
         from ..clients.llm import get_llm
         from ..service.diagnoser import IncidentDiagnoser
-        from ..store.repositories import ActionRepository, IncidentRepository
+        from ..store.repositories import (
+            ActionRepository,
+            ActiveIncidentRepository,
+            IncidentRepository,
+        )
 
         gatherer = EvidenceGatherer(conn)
         diagnoser = IncidentDiagnoser(
-            gatherer, get_llm(), IncidentRepository(conn), ActionRepository(conn)
+            gatherer,
+            get_llm(),
+            IncidentRepository(conn),
+            ActionRepository(conn),
+            ActiveIncidentRepository(conn),
         )
-        result = diagnoser.respond(req.alert, origin_node=req.origin_node, k=req.k)
+        result = diagnoser.respond(
+            req.alert, origin_node=req.origin_node, k=req.k, session_id=req.session_id
+        )
         return result_to_dict(result)
 
     return app

@@ -19,17 +19,28 @@ export function App() {
   const [turns, setTurns] = useState<Turn[]>([]);
   const [activeId, setActiveId] = useState<number | null>(null);
   const [busy, setBusy] = useState(false);
+  // The active-incident conversation. null = the next alert opens a fresh
+  // incident; set = follow-ups continue the same conversation (multi-turn).
+  const [sessionId, setSessionId] = useState<string | null>(null);
 
   const activeTurn = turns.find((t) => t.id === activeId) ?? null;
 
+  function newIncident() {
+    setSessionId(null);
+  }
+
   async function submit(req: ChatRequest) {
     const id = nextId++;
-    setTurns((prev) => [...prev, { id, request: req, pending: true }]);
+    // Continue the current conversation if one is open.
+    const outbound: ChatRequest = { ...req, session_id: sessionId ?? undefined };
+    setTurns((prev) => [...prev, { id, request: outbound, pending: true }]);
     setActiveId(id);
     setBusy(true);
 
     try {
-      const response = await sendChat(req);
+      const response = await sendChat(outbound);
+      // Adopt the conversation id so the next message is a follow-up.
+      setSessionId(response.session_id ?? null);
       setTurns((prev) =>
         prev.map((t) => (t.id === id ? { ...t, response, pending: false } : t)),
       );
@@ -62,7 +73,12 @@ export function App() {
       <main className="app__body">
         <section className="chat">
           <ChatThread turns={turns} activeId={activeId} onSelect={setActiveId} />
-          <AlertComposer onSubmit={submit} disabled={busy} />
+          <AlertComposer
+            onSubmit={submit}
+            disabled={busy}
+            continuing={sessionId !== null}
+            onNewIncident={newIncident}
+          />
         </section>
 
         <aside className="evidence">

@@ -120,8 +120,12 @@ def diagnosis_to_dict(d: Diagnosis) -> dict[str, Any]:
 
 
 def result_to_dict(result: DiagnosisResult) -> dict[str, Any]:
-    """The /chat response envelope: {diagnosis, evidence}."""
+    """The /chat response envelope: {diagnosis, evidence, session_id}.
+
+    `session_id` is the active-incident conversation this turn belongs to; the
+    frontend echoes it on the next request to continue the same conversation."""
     return {
         "diagnosis": diagnosis_to_dict(result.diagnosis),
         "evidence": packet_to_dict(result.evidence),
+        "session_id": result.session_id,
     }
