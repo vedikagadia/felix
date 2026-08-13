@@ -10,8 +10,11 @@ By the end you'll have:
 - a single-node CockroachDB with the 9 tables and 154 seeded rows (incidents,
   docs, code changes, code graph — embeddings included; the two working-memory
   tables populate at runtime as you chat),
-- the API at `http://localhost:8000` (`/health`, `/recall`, `/chat`),
-- the frontend at `http://localhost:5173` talking to that API.
+- the API at `http://localhost:8000` (`/health`, `/recall`, `/chat`,
+  `/chat/stream`, plus `/alerts` + `/sessions/{id}` for the CDC loop),
+- the frontend at `http://localhost:5173` talking to that API,
+- (optional) the **real-time CDC metrics loop** — a live changefeed →
+  anomaly → auto-diagnosis demo (see §7).
 
 ---
 
@@ -208,10 +211,18 @@ npm install
 npm run dev            # http://localhost:5173
 ```
 
-The dev server reads `frontend/.env.local` (committed):
-`VITE_API_URL=http://localhost:8000` points it at the backend. The API enables
-permissive CORS, so the cross-origin call works directly. With `VITE_API_URL`
-unset the UI runs in **mock mode** (no backend needed) — handy for pure UI work.
+The dev server reads `frontend/.env.local`:
+`VITE_API_URL=http://localhost:8000` points it at the backend. That file is
+**gitignored**, so create it on a fresh checkout (one line) or the UI falls back
+to **mock mode**:
+
+```bash
+echo 'VITE_API_URL=http://localhost:8000' > frontend/.env.local
+```
+
+The API enables permissive CORS, so the cross-origin call works directly. With
+`VITE_API_URL` unset the UI runs in **mock mode** (no backend needed) — handy
+for pure UI work.
 
 Build / typecheck:
 
@@ -221,7 +232,82 @@ npm run build          # tsc --noEmit && vite build
 
 ---
 
-## 7. Tests
+## 7. Run the real-time CDC metrics loop (the "no alert fired" demo)
+
+This is felix reacting to **live** telemetry: a sample service emits metrics, a
+CockroachDB **CHANGEFEED** pushes them to a watcher, and when p99 latency spikes
+while the average stays green — the dashboard-hiding-tail signature of planted
+puzzle B — the watcher auto-opens an incident and diagnoses it. The browser
+surfaces it as an alert you can click into. It reuses the same diagnoser and
+session tables as `/chat`; nothing new reasons or writes back.
+
+You need **four processes running at once** — use a separate terminal tab for
+each. Steps 5 (API) and 6 (frontend) from above are two of them; add the watcher
+and the sample emitter. All run from the repo root with the venv.
+
+```bash
+# Terminal 1 — API (from §5). Serves /chat, /chat/stream, /alerts, /sessions/{id}
+./.venv/bin/python -m src serve --host 127.0.0.1 --port 8000
+
+# Terminal 2 — the watcher: holds the CHANGEFEED, trips on a spike, diagnoses.
+#   --debug logs every consumed metric so you can watch it work.
+./.venv/bin/python -m src watch --debug
+#   wait for: "watching metrics changefeed (target metric: checkout_latency_ms)"
+
+# Terminal 3 — the sample checkout service: emits one sample per tick, spiking
+#   every 12th tick. --interval is seconds between ticks.
+./.venv/bin/python -m sample_project.run --interval 0.5
+
+# Terminal 4 — the frontend (from §6)
+cd frontend && npm run dev            # http://localhost:5173
+```
+
+**What to expect (~15–30s in):** the watcher needs `MIN_SAMPLES=30` before it can
+trip, so at `--interval 0.5` give it ~15–30s. When it trips, Terminal 2 prints:
+
+```
+TRIP: p99 checkout_latency_ms for checkout-service spiked to 2356ms over the last 60 samples while avg held flat at 228ms — no dashboard alert fired.
+```
+
+Then in the browser: an **alert banner** appears within one poll (the UI polls
+`GET /alerts` every 3s). **Click it** → the chat opens pre-seeded with the metric
+as the first turn and felix's diagnosis (the p99→avg aggregation switch) as the
+reply. Type a follow-up and it streams in the context of that incident.
+
+Verify from the shell without the UI:
+
+```bash
+# the open cdc alert (empty until the watcher trips):
+curl -s http://127.0.0.1:8000/alerts | python3 -m json.tool
+
+# the full session — turn 0 = metric, turn 1 = diagnosis (use the id from /alerts):
+curl -s http://127.0.0.1:8000/sessions/<SESSION_ID> | python3 -m json.tool
+```
+
+**Notes / gotchas**
+
+- **The watcher needs `GEMINI_API_KEY`** to diagnose a trip — it exits early with
+  a message if it's unset. (Recall-only has no meaning here; a trip must reason.)
+- **One diagnosis per spike.** The watcher dedupes on
+  `origin_node = "cdc:<service>:<metric>"`: once a cdc session is open it
+  short-circuits further trips for that metric. To force a **fresh** alert on a
+  re-run, clear the transient state:
+  ```bash
+  cockroach sql --insecure --host=localhost:26257 --database=felix \
+    -e "UPDATE active_incidents SET status='resolved' WHERE source='cdc'; TRUNCATE metrics;"
+  ```
+  (Restarting the watcher also clears its in-memory dedup, but the DB check above
+  is what actually re-arms it.)
+- **No trip after 30+ samples?** Check Terminal 2 for the `TRIP:` line. The rule
+  is in `src/service/watcher.py`: `p99 ≥ 1000ms AND avg ≤ 300ms` over the rolling
+  `WINDOW=60`. The sample emitter's spikes (`1500–2500ms`, every 12th tick) on an
+  `80–120ms` baseline satisfy both once warmed.
+- **The `metrics` table is transient telemetry**, not a memory source — nothing
+  vector-searches it, and `TRUNCATE metrics` between runs is safe.
+
+---
+
+## 8. Tests
 
 ```bash
 ./.venv/bin/python -m pytest            # deterministic: parsing + write-back (no key/network)
@@ -229,7 +315,9 @@ npm run build          # tsc --noEmit && vite build
 ```
 
 The default run needs no API key or network. The `-m live` run needs a seeded DB
-and a working `GEMINI_API_KEY`.
+and a working `GEMINI_API_KEY`. The CDC loop's own tests (metric round-trip,
+anomaly-rule logic, API endpoint shapes) are in the default run — no watcher
+process required.
 
 ---
 
@@ -248,3 +336,8 @@ and a working `GEMINI_API_KEY`.
   `frontend/.env.local` and restart `npm run dev`.
 - **`serve: uvicorn is not installed`** → `pip install -r requirements.txt` into
   the active venv (it includes `fastapi` + `uvicorn[standard]`).
+- **CDC watcher never trips / `/alerts` stays empty** → see §7's notes: it needs
+  `GEMINI_API_KEY`, ≥30 samples, and a not-already-open cdc session (dedup). Reset
+  with `UPDATE active_incidents SET status='resolved' WHERE source='cdc'; TRUNCATE metrics;`.
+- **`watch: GEMINI_API_KEY is not set`** → the watcher can't diagnose a trip
+  without the key; set it in `.env` (same key as `/chat`).
