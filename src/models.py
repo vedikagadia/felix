@@ -176,6 +176,7 @@ class ActiveIncident:
     incident_id: str | None = None
     status: str = "open"
     turns: list[ActiveIncidentTurn] = field(default_factory=list)
+    source: str = "chat"  # 'chat' | 'cdc' — how the session was opened
 
 
 @dataclass

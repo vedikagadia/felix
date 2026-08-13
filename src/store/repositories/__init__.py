@@ -11,6 +11,7 @@ from .changes import ChangeRepository
 from .docs import DocRepository
 from .graph import GraphRepository
 from .incidents import IncidentRepository
+from .metrics import MetricRepository
 
 __all__ = [
     "ActionRepository",
@@ -19,4 +20,5 @@ __all__ = [
     "DocRepository",
     "GraphRepository",
     "IncidentRepository",
+    "MetricRepository",
 ]

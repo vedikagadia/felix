@@ -92,6 +92,7 @@ class IncidentRepository(BaseRepository):
         *,
         title: str,
         symptoms: str,
+        root_cause: str | None = None,
         service: str | None = None,
         severity: str | None = None,
     ) -> str:
@@ -101,17 +102,19 @@ class IncidentRepository(BaseRepository):
 
         Used by the reasoning layer to create a parent incident row for an
         alert being diagnosed live, so resolution_steps have somewhere to
-        attach. `id` is DB-generated (gen_random_uuid() default) since there's
-        no deterministic seed id for a live alert. Returns the new incident id.
+        attach. `root_cause` is persisted so `get()` (hence GET /sessions) can
+        reconstruct the diagnosis — the CDC alert's only delivery channel to the
+        UI. `id` is DB-generated (gen_random_uuid() default) since there's no
+        deterministic seed id for a live alert. Returns the new incident id.
         """
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO incidents (title, symptoms, service, severity)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO incidents (title, symptoms, root_cause, service, severity)
+                VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (title, symptoms, service, severity),
+                (title, symptoms, root_cause, service, severity),
             )
             row = cur.fetchone()
         return str(row[0])
@@ -128,6 +131,45 @@ class IncidentRepository(BaseRepository):
                     command=step.command,
                     outcome=step.outcome,
                 )
+
+    def get(self, incident_id: str) -> Incident | None:
+        """Load one incident by id with its ordered resolution_steps, or None if
+        unknown. Used by GET /sessions to reconstruct the diagnosis for a
+        CDC-minted session from its linked episodic row (no embedding needed)."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, title, symptoms, root_cause, service, severity
+                FROM incidents
+                WHERE id = %s
+                """,
+                (incident_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            cur.execute(
+                """
+                SELECT step_order, action, command, outcome
+                FROM resolution_steps
+                WHERE incident_id = %s
+                ORDER BY step_order
+                """,
+                (incident_id,),
+            )
+            step_rows = cur.fetchall()
+        return Incident(
+            id=str(row[0]),
+            title=row[1],
+            symptoms=row[2],
+            root_cause=row[3],
+            service=row[4],
+            severity=row[5],
+            resolution_steps=[
+                ResolutionStep(step_order=int(s[0]), action=s[1], command=s[2], outcome=s[3])
+                for s in step_rows
+            ],
+        )
 
     def recall(self, query_vec: Sequence[float], k: int = 5) -> list[Recall[Incident]]:
         """Top-k incidents nearest to query_vec, by L2 distance on embedding."""

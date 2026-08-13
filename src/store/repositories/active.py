@@ -20,16 +20,17 @@ class ActiveIncidentRepository(BaseRepository):
         alert: str,
         origin_node: str | None = None,
         incident_id: str | None = None,
+        source: str = "chat",
     ) -> str:
         """Open a new active-incident session. Returns its id (the session id)."""
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO active_incidents (alert, origin_node, incident_id)
-                VALUES (%s, %s, %s)
+                INSERT INTO active_incidents (alert, origin_node, incident_id, source)
+                VALUES (%s, %s, %s, %s)
                 RETURNING id
                 """,
-                (alert, origin_node, incident_id),
+                (alert, origin_node, incident_id, source),
             )
             row = cur.fetchone()
         return str(row[0])
@@ -39,7 +40,7 @@ class ActiveIncidentRepository(BaseRepository):
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, alert, origin_node, incident_id, status
+                SELECT id, alert, origin_node, incident_id, status, source
                 FROM active_incidents
                 WHERE id = %s
                 """,
@@ -68,7 +69,50 @@ class ActiveIncidentRepository(BaseRepository):
                 ActiveIncidentTurn(turn_order=int(t[0]), role=t[1], content=t[2])
                 for t in turn_rows
             ],
+            source=row[5],
         )
+
+    def list_alerts(self, source: str = "cdc", status: str = "open") -> list[dict]:
+        """Sessions of a given source+status, newest-first, as lightweight dicts
+        (the API maps these to its AlertPayload). `origin_node` is included so the
+        caller can parse `service`/`metric` out of a `"cdc:<service>:<metric>"`
+        key — the frozen AlertPayload needs those fields."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, alert, origin_node, source, status, created_at
+                FROM active_incidents
+                WHERE source = %s AND status = %s
+                ORDER BY created_at DESC
+                """,
+                (source, status),
+            )
+            rows = cur.fetchall()
+        return [
+            {
+                "id": str(r[0]),
+                "alert": r[1],
+                "origin_node": r[2],
+                "source": r[3],
+                "status": r[4],
+                "created_at": r[5],
+            }
+            for r in rows
+        ]
+
+    def count_open(self, source: str, origin_node: str) -> int:
+        """Number of OPEN sessions of a given source with this origin_node — the
+        watcher's DB-backed cooldown/dedup guard (one open cdc session per
+        `(service, metric)`, encoded as `origin_node = "cdc:<service>:<metric>"`)."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT count(*) FROM active_incidents
+                WHERE status = 'open' AND source = %s AND origin_node = %s
+                """,
+                (source, origin_node),
+            )
+            return int(cur.fetchone()[0])
 
     def append_turn(self, session_id: str, *, role: str, content: str) -> int:
         """Append a turn to a session, auto-assigning the next turn_order.

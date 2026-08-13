@@ -109,6 +109,59 @@ def _cmd_respond(args: argparse.Namespace) -> None:
         conn.close()
 
 
+# ── watch ────────────────────────────────────────────────────────────────────
+
+
+def _cmd_watch(args: argparse.Namespace) -> None:
+    """Run the CDC metrics watcher: hold a sinkless CHANGEFEED on `metrics` and
+    fire the diagnoser when p99 latency spikes while avg stays green. Uses its
+    OWN long-lived connection (not the request-scoped API dependency)."""
+    import logging
+
+    from .clients.llm import get_llm
+    from .service.diagnoser import IncidentDiagnoser
+    from .service.watcher import MetricWatcher
+    from .store.repositories import (
+        ActionRepository,
+        ActiveIncidentRepository,
+        IncidentRepository,
+        MetricRepository,
+    )
+
+    logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format="%(message)s")
+
+    settings = get_settings()
+    if settings.llm_provider == "gemini" and not settings.gemini_api_key:
+        print("watch: GEMINI_API_KEY is not set — the watcher can't diagnose trips. Set it and re-run.")
+        return
+
+    # Two connections: the changefeed stream holds a server-side portal on
+    # `stream_conn` and can't share it (psycopg forbids a concurrent op while a
+    # stream is open); everything else — cooldown check, write-back — uses `conn`.
+    # Both are acquired inside the try so a failure opening the second doesn't
+    # leak the first (the finally closes whatever got opened).
+    conn = stream_conn = None
+    try:
+        conn = get_conn()
+        stream_conn = get_conn()
+        diagnoser = IncidentDiagnoser(
+            EvidenceGatherer(conn),
+            get_llm(),
+            IncidentRepository(conn),
+            ActionRepository(conn),
+            ActiveIncidentRepository(conn),
+        )
+        watcher = MetricWatcher(conn, stream_conn, MetricRepository(conn), diagnoser)
+        watcher.run()
+    except KeyboardInterrupt:
+        print("\nwatch: stopped.")
+    finally:
+        if conn is not None:
+            conn.close()
+        if stream_conn is not None:
+            stream_conn.close()
+
+
 # ── seed ───────────────────────────────────────────────────────────────────────
 
 
@@ -206,6 +259,10 @@ def build_parser() -> argparse.ArgumentParser:
         help="evidence packet only ([1]-[4]) — skip the LLM diagnosis step, no DB writes",
     )
     p_respond.set_defaults(func=_cmd_respond)
+
+    p_watch = sub.add_parser("watch", help="run the CDC metrics watcher (changefeed -> anomaly -> diagnose)")
+    p_watch.add_argument("--debug", action="store_true", help="log every consumed metric (verbose)")
+    p_watch.set_defaults(func=_cmd_watch)
 
     p_seed = sub.add_parser("seed", help="seed CockroachDB with felix's memory corpora")
     p_seed.add_argument("--apply-schema", action="store_true", help="run sql/schema.sql first (idempotent)")

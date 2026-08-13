@@ -133,9 +133,13 @@ CREATE TABLE IF NOT EXISTS active_incidents (
     origin_node STRING,                                       -- code_nodes.name, if pinned
     incident_id UUID REFERENCES incidents(id) ON DELETE SET NULL,  -- episodic row from turn 1
     status      STRING NOT NULL DEFAULT 'open',               -- open | resolved
+    source      STRING NOT NULL DEFAULT 'chat',               -- 'chat' | 'cdc' — how the session was opened
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+-- Idempotent migration for already-seeded DBs: CREATE TABLE IF NOT EXISTS won't
+-- add the column to a table that predates it, so ALTER it in explicitly.
+ALTER TABLE active_incidents ADD COLUMN IF NOT EXISTS source STRING NOT NULL DEFAULT 'chat';
 CREATE INDEX IF NOT EXISTS active_incidents_status_idx ON active_incidents (status, updated_at DESC);
 
 -- Ordered transcript of one active-incident conversation. Child table (not
@@ -150,3 +154,18 @@ CREATE TABLE IF NOT EXISTS active_incident_turns (
     UNIQUE (session_id, turn_order)
 );
 CREATE INDEX IF NOT EXISTS active_incident_turns_session_idx ON active_incident_turns (session_id, turn_order);
+
+-- ── Live service metrics: the CDC source table ──────────────────────────────
+-- The sample checkout service INSERTs one row per emitted metric sample. The
+-- felix watcher (python -m src watch) holds a sinkless CHANGEFEED on this table
+-- and reacts to anomalies in real time. Not a memory source — it is transient
+-- operational telemetry (prune freely); nothing vector-searches it.
+CREATE TABLE IF NOT EXISTS metrics (
+    id       UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    service  STRING NOT NULL,               -- e.g. "checkout-service"
+    metric   STRING NOT NULL,               -- e.g. "checkout_latency_ms", "pool_in_use"
+    value    FLOAT NOT NULL,
+    ts       TIMESTAMPTZ NOT NULL DEFAULT now(),
+    labels   JSONB                          -- optional dims, e.g. {"attempt": 3}
+);
+CREATE INDEX IF NOT EXISTS metrics_service_metric_ts_idx ON metrics (service, metric, ts DESC);
