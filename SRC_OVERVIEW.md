@@ -40,11 +40,15 @@ repository layer. Key ones:
 - `GraphHit` — a `CodeNode` + the shallowest **hop depth** it was reached at.
 - `EvidencePacket` — everything retrieval gathers for one alert (the input to
   reasoning).
-- `Diagnosis` — the reasoning layer's output; `DiagnosisResult` bundles a
-  `Diagnosis` with the `EvidencePacket` it was reasoned over plus the
+- `Diagnosis` — the reasoning layer's heavy structured output; `Message` — the
+  lightweight conversational reply (Markdown `text`) it can return instead on a
+  follow-up. `AgentResponse = Diagnosis | Message` is the tagged union the model
+  picks per turn (discriminated by a `"type"` field). `DiagnosisResult` bundles
+  the chosen `response` with the `EvidencePacket` it was reasoned over plus the
   `session_id` of the conversation it belongs to (so one gather serves both the
-  diagnosis and the evidence display, and callers can continue the thread).
-  `LLMResult` wraps one LLM completion.
+  response and the evidence display, and callers can continue the thread); its
+  `.response_type` ("diagnosis"|"message") and `.diagnosis` accessor let callers
+  switch on the shape. `LLMResult` wraps one LLM completion.
 - Working memory: `ActiveIncident` (a live conversation, linked to its episodic
   `incident_id`) + `ActiveIncidentTurn` (one `user`/`agent` message).
 
@@ -95,7 +99,7 @@ importing the package is always safe without AWS/Gemini/MCP configured.
   `EvidencePacket`. Fully deterministic; stops before the LLM.
 - **`diagnoser.py`**: `IncidentDiagnoser` — the *reasoning half*. Its
   `respond(alert, session_id=None)` runs the loop and returns a `DiagnosisResult`
-  (diagnosis + packet + session); `respond_stream(...)` is the generator twin
+  (response + packet + session); `respond_stream(...)` is the generator twin
   that yields `("evidence", packet)` → `("delta", str)*` → `("done", result)`
   for the SSE endpoint (same recall, prompt, parse, and atomic write-back — only
   the LLM step is streamed, via `LLMClient.stream()`); `diagnose()` is a
@@ -111,8 +115,10 @@ importing the package is always safe without AWS/Gemini/MCP configured.
   3. build a structured prompt (folding in the prior transcript on follow-ups)
   4. call the LLM
   5. **defensive parse** (`_extract_json_object` tolerates fences/prose, never
-     raises) with a **citation-integrity guard** (drops any cited id not verbatim
-     in the packet)
+     raises) into the shape the model chose — a `Diagnosis` or, on a follow-up, a
+     lightweight `Message` (discriminated by `"type"`; first turns are forced to a
+     diagnosis) — with a **citation-integrity guard** (drops any cited id not
+     verbatim in the packet)
   6. **atomic write-back**, split by turn kind: first turn mints an episodic
      incident (+ steps + audit) and opens a session; a follow-up records the
      exchange in working memory ONLY (no new incident) — each in one transaction
@@ -126,13 +132,15 @@ A thin adapter over the service layer, parallel to the CLI — no business logic
 - **`app.py`**: `create_app()` builds the FastAPI app with permissive CORS and a
   per-request connection dependency (`db_conn`). Routes are declared `def` (not
   `async def`) so FastAPI runs the blocking psycopg/LLM calls in a threadpool.
-  Endpoints: `POST /chat` → `{diagnosis, evidence, session_id}` (full loop via
-  `IncidentDiagnoser.respond`; accepts an optional `session_id` in the body to
-  continue a conversation as a follow-up), `POST /chat/stream` → **Server-Sent
-  Events** (the same loop via `respond_stream`, streamed live: an `evidence`
-  frame the moment recall finishes, `delta` frames as the model generates, then
-  a `done` frame carrying the same `{diagnosis, evidence, session_id}` envelope
-  after parse + write-back; an `error` frame on failure), `POST /recall` →
+  Endpoints: `POST /chat` → `{response_type, diagnosis, message, evidence,
+  session_id}` (full loop via `IncidentDiagnoser.respond`; `response_type`
+  ("diagnosis"|"message") says which of `diagnosis`/`message` is populated — the
+  other is null; accepts an optional `session_id` in the body to continue a
+  conversation as a follow-up), `POST /chat/stream` → **Server-Sent Events** (the
+  same loop via `respond_stream`, streamed live: an `evidence` frame the moment
+  recall finishes, `delta` frames as the model generates, then a `done` frame
+  carrying the same envelope after parse + write-back; an `error` frame on
+  failure), `POST /recall` →
   `{evidence}` (retrieval only, the `--no-llm` equivalent), `GET /health`. Both
   `/chat` and `/chat/stream` return 503 if the LLM isn't configured.
 - **`schemas.py`**: serializes domain models to the JSON contract in

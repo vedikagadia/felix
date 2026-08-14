@@ -109,6 +109,20 @@ export interface ProposedStep {
   outcome?: string | null;
 }
 
+/**
+ * The *other* response shape besides a full `Diagnosis` — a lightweight,
+ * conversational reply for follow-ups where a rigid root-cause/steps card would
+ * be overkill (e.g. "how do I rerun the service?"). `text` is GitHub-flavored
+ * Markdown; it can still cite recalled memory. The model chooses `Diagnosis` vs
+ * `Message` per turn (see `ChatResponse.response_type`).
+ */
+export interface Message {
+  text: string; // GitHub-flavored Markdown
+  cited_incident_ids: string[];
+  cited_change_ids: string[];
+  incident_id: string | null;
+}
+
 // ── request / response envelope ─────────────────────────────────────────────
 
 export interface ChatRequest {
@@ -125,8 +139,17 @@ export interface ChatRequest {
   session_id?: string | null;
 }
 
+/**
+ * The /chat (and /chat/stream `done`) envelope. `response_type` is the
+ * discriminator: exactly one of `diagnosis` / `message` is populated (the other
+ * is null). A first turn is always a `diagnosis`; a follow-up is usually a
+ * lightweight `message`, or a fresh `diagnosis` if the engineer reports a
+ * materially new problem.
+ */
 export interface ChatResponse {
-  diagnosis: Diagnosis;
+  response_type: "diagnosis" | "message";
+  diagnosis: Diagnosis | null;
+  message: Message | null;
   evidence: EvidencePacket;
   /** The conversation this turn belongs to; echo it on the next request to continue. */
   session_id?: string | null;

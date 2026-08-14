@@ -14,6 +14,8 @@ import type { ChatRequest, ChatResponse, StreamHandlers } from "./types";
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
 const POOL_SCENARIO: ChatResponse = {
+  response_type: "diagnosis",
+  message: null,
   diagnosis: {
     summary:
       "Connection-pool exhaustion during traffic spikes is driven by checkout holding a pooled connection across the payment gateway's retry loop — not a DB capacity problem.",
@@ -117,6 +119,8 @@ const POOL_SCENARIO: ChatResponse = {
 };
 
 const LATENCY_SCENARIO: ChatResponse = {
+  response_type: "diagnosis",
+  message: null,
   diagnosis: {
     summary:
       "Customers see slow checkout while dashboards stay green because tail latency is being hidden by a recent metrics change, not because latency improved.",
@@ -177,6 +181,8 @@ const LATENCY_SCENARIO: ChatResponse = {
 
 function genericScenario(req: ChatRequest): ChatResponse {
   return {
+    response_type: "diagnosis",
+    message: null,
     diagnosis: {
       summary: `(mock) No canned scenario matched this alert. Wire up the real backend to get a live diagnosis.`,
       root_cause: null,
@@ -199,23 +205,30 @@ function genericScenario(req: ChatRequest): ChatResponse {
 }
 
 /**
- * A canned follow-up reply, so mock mode also demonstrates multi-turn: once a
- * conversation is open (req.session_id set) we answer the follow-up in context
- * rather than re-diagnosing from scratch. Evidence is left empty — the panel
- * keeps showing the original turn's evidence.
+ * A canned follow-up reply, so mock mode also demonstrates multi-turn AND the
+ * lightweight `message` shape: once a conversation is open (req.session_id set)
+ * we answer the follow-up conversationally (Markdown) rather than re-diagnosing
+ * with a full root-cause/steps card. Evidence is left empty — the panel keeps
+ * showing the original turn's evidence.
  */
 function followUpScenario(req: ChatRequest): ChatResponse {
   return {
-    session_id: req.session_id,
-    diagnosis: {
-      summary: `(mock) Following up on "${req.alert}": scaling the DB alone won't clear this — the pool, not the DB, is the bottleneck. Release the connection before the payment retry loop and re-check pool checkout p99.`,
-      root_cause: null,
-      proposed_steps: [],
+    response_type: "message",
+    diagnosis: null,
+    message: {
+      text:
+        `Scaling the DB alone won't clear this — **the pool, not the DB, is the bottleneck**.\n\n` +
+        `1. Release the connection *before* the payment retry loop\n` +
+        `2. Re-check pool checkout p99:\n\n` +
+        "```bash\n" +
+        "kubectl exec deploy/checkout-service -- \\\n" +
+        "  curl -s localhost:9090/metrics | grep pool_checkout_seconds\n" +
+        "```",
       cited_incident_ids: [],
       cited_change_ids: [],
-      confidence: null,
       incident_id: null,
     },
+    session_id: req.session_id,
     evidence: { alert: req.alert, incidents: [], docs: [], changes: [], upstream: [] },
   };
 }
@@ -261,7 +274,13 @@ export async function mockChatStream(req: ChatRequest, handlers: StreamHandlers)
   const response = resolveScenario(req);
   await sleep(300);
   handlers.onEvidence?.(response.evidence);
-  for (const word of response.diagnosis.summary.split(/(\s+)/)) {
+  // Stream whichever shape this turn produced: the message body for a
+  // conversational follow-up, else the diagnosis summary.
+  const preview =
+    response.response_type === "message"
+      ? (response.message?.text ?? "")
+      : (response.diagnosis?.summary ?? "");
+  for (const word of preview.split(/(\s+)/)) {
     await sleep(28);
     handlers.onDelta?.(word);
   }

@@ -11,7 +11,7 @@ import json
 
 import pytest
 
-from src.models import Diagnosis
+from src.models import Diagnosis, Message
 from src.service.diagnoser import IncidentDiagnoser, _extract_json_object
 from tests.conftest import make_packet
 
@@ -54,7 +54,7 @@ def test_extract_prefers_answer_block_over_example():
     assert obj["summary"] == "real"
 
 
-# ── _parse_diagnosis: citation-integrity guard ───────────────────────────────
+# ── _parse_response (allow_message=False): citation-integrity guard ───────────
 
 
 def test_citation_guard_drops_hallucinated_ids(diagnoser):
@@ -69,7 +69,7 @@ def test_citation_guard_drops_hallucinated_ids(diagnoser):
             "confidence": 0.9,
         }
     )
-    d = diagnoser._parse_diagnosis(text, packet)
+    d = diagnoser._parse_response(text, packet, allow_message=False)
     assert d.cited_incident_ids == ["real-inc"]
     assert d.cited_change_ids == ["real-chg"]
 
@@ -77,11 +77,11 @@ def test_citation_guard_drops_hallucinated_ids(diagnoser):
 def test_citation_guard_empty_when_none_match(diagnoser):
     packet = make_packet(incident_ids=["real-inc"])
     text = json.dumps({"summary": "s", "cited_incident_ids": ["nope"], "cited_change_ids": []})
-    d = diagnoser._parse_diagnosis(text, packet)
+    d = diagnoser._parse_response(text, packet, allow_message=False)
     assert d.cited_incident_ids == []
 
 
-# ── _parse_diagnosis: confidence clamp + type coercion ────────────────────────
+# ── _parse_response (allow_message=False): confidence clamp + type coercion ───
 
 
 @pytest.mark.parametrize(
@@ -91,13 +91,13 @@ def test_citation_guard_empty_when_none_match(diagnoser):
 def test_confidence_clamp(diagnoser, raw, expected):
     packet = make_packet()
     text = json.dumps({"summary": "s", "confidence": raw})
-    d = diagnoser._parse_diagnosis(text, packet)
+    d = diagnoser._parse_response(text, packet, allow_message=False)
     assert d.confidence == expected
 
 
 def test_non_json_falls_back_to_summary(diagnoser):
     packet = make_packet()
-    d = diagnoser._parse_diagnosis("model babbled with no json", packet)
+    d = diagnoser._parse_response("model babbled with no json", packet, allow_message=False)
     assert isinstance(d, Diagnosis)
     assert d.root_cause is None
     assert d.cited_incident_ids == []
@@ -107,8 +107,59 @@ def test_non_json_falls_back_to_summary(diagnoser):
 def test_root_cause_null_preserved(diagnoser):
     packet = make_packet()
     text = json.dumps({"summary": "s", "root_cause": None})
-    d = diagnoser._parse_diagnosis(text, packet)
+    d = diagnoser._parse_response(text, packet, allow_message=False)
     assert d.root_cause is None
+
+
+# ── _parse_response (allow_message=True): the follow-up tagged-union branch ───
+
+
+def test_follow_up_message_type_parses_as_message(diagnoser):
+    packet = make_packet()
+    text = json.dumps({"type": "message", "text": "Run `python -m src serve` to restart it."})
+    r = diagnoser._parse_response(text, packet, allow_message=True)
+    assert isinstance(r, Message)
+    assert "restart it" in r.text
+
+
+def test_follow_up_diagnosis_type_still_parses_as_diagnosis(diagnoser):
+    # A follow-up may escalate back to a full diagnosis; the discriminator wins.
+    packet = make_packet()
+    text = json.dumps({"type": "diagnosis", "summary": "new problem", "root_cause": "c"})
+    r = diagnoser._parse_response(text, packet, allow_message=True)
+    assert isinstance(r, Diagnosis)
+    assert r.root_cause == "c"
+
+
+def test_follow_up_untyped_text_shape_defaults_to_message(diagnoser):
+    # No "type", but free "text" and no "summary" → treated as a message.
+    packet = make_packet()
+    text = json.dumps({"text": "just re-run the service"})
+    r = diagnoser._parse_response(text, packet, allow_message=True)
+    assert isinstance(r, Message)
+
+
+def test_follow_up_non_json_falls_back_to_message(diagnoser):
+    packet = make_packet()
+    r = diagnoser._parse_response("model babbled with no json", packet, allow_message=True)
+    assert isinstance(r, Message)
+    assert "babbled" in r.text
+
+
+def test_message_citation_guard_drops_hallucinated_ids(diagnoser):
+    packet = make_packet(incident_ids=["real-inc"], change_ids=["real-chg"])
+    text = json.dumps(
+        {
+            "type": "message",
+            "text": "see the prior incident",
+            "cited_incident_ids": ["real-inc", "FAKE"],
+            "cited_change_ids": ["ALSO-FAKE"],
+        }
+    )
+    r = diagnoser._parse_response(text, packet, allow_message=True)
+    assert isinstance(r, Message)
+    assert r.cited_incident_ids == ["real-inc"]
+    assert r.cited_change_ids == []
 
 
 # ── _to_resolution_steps: list[str] vs list[dict] ────────────────────────────

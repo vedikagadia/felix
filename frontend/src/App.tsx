@@ -56,7 +56,9 @@ function seededTurn(id: number, session: SessionResponse): Turn {
     id,
     request: { alert: session.alert, origin_node: session.origin_node, session_id: session.session_id },
     response: {
+      response_type: "diagnosis",
       diagnosis,
+      message: null,
       evidence: session.evidence ?? EMPTY_EVIDENCE(session.alert),
       session_id: session.session_id,
     },

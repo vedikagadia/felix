@@ -22,6 +22,7 @@ from ..models import (
     EvidencePacket,
     GraphHit,
     Incident,
+    Message,
     Recall,
 )
 
@@ -120,6 +121,15 @@ def diagnosis_to_dict(d: Diagnosis) -> dict[str, Any]:
     }
 
 
+def message_to_dict(m: Message) -> dict[str, Any]:
+    return {
+        "text": m.text,
+        "cited_incident_ids": m.cited_incident_ids,
+        "cited_change_ids": m.cited_change_ids,
+        "incident_id": m.incident_id,
+    }
+
+
 def alert_to_dict(row: dict[str, Any]) -> dict[str, Any]:
     """One `list_alerts` row -> the frozen AlertPayload (CDC_INTERFACE §7.3).
 
@@ -178,12 +188,19 @@ def session_to_dict(session: ActiveIncident, incident: Incident | None) -> dict[
 
 
 def result_to_dict(result: DiagnosisResult) -> dict[str, Any]:
-    """The /chat response envelope: {diagnosis, evidence, session_id}.
+    """The /chat response envelope: {response_type, diagnosis, message, evidence,
+    session_id}.
 
+    `response_type` ("diagnosis" | "message") tells the frontend which of
+    `diagnosis`/`message` is populated (the other is null) — a full structured
+    diagnosis, or a lightweight conversational reply for a follow-up.
     `session_id` is the active-incident conversation this turn belongs to; the
     frontend echoes it on the next request to continue the same conversation."""
+    resp = result.response
     return {
-        "diagnosis": diagnosis_to_dict(result.diagnosis),
+        "response_type": result.response_type,
+        "diagnosis": diagnosis_to_dict(resp) if isinstance(resp, Diagnosis) else None,
+        "message": message_to_dict(resp) if isinstance(resp, Message) else None,
         "evidence": packet_to_dict(result.evidence),
         "session_id": result.session_id,
     }

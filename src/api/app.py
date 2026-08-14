@@ -25,7 +25,6 @@ from ..service.evidence_gatherer import EvidenceGatherer
 from ..store.connection import get_conn
 from .schemas import (
     alert_to_dict,
-    diagnosis_to_dict,
     packet_to_dict,
     result_to_dict,
     session_to_dict,
@@ -208,14 +207,9 @@ def create_app() -> FastAPI:
                     elif kind == "delta":
                         yield _sse("delta", {"text": payload})
                     elif kind == "done":
-                        yield _sse(
-                            "done",
-                            {
-                                "diagnosis": diagnosis_to_dict(payload.diagnosis),
-                                "evidence": packet_to_dict(payload.evidence),
-                                "session_id": payload.session_id,
-                            },
-                        )
+                        # Same envelope as POST /chat (response_type + diagnosis
+                        # | message + evidence + session_id).
+                        yield _sse("done", result_to_dict(payload))
             except Exception as e:  # noqa: BLE001 - report any failure to the client, don't 500 mid-stream
                 yield _sse("error", {"error": str(e)})
 

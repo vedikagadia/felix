@@ -233,6 +233,69 @@ body {
   flex-wrap: wrap;
 }
 
+/* ── conversational message (the non-diagnosis reply shape) ─────────────── */
+
+/* Rendered Markdown body for a `message` follow-up. Tightened block margins so
+   it reads like a chat reply, not a document; shares the diagnosis footer. */
+.markdown {
+  font-size: 14px;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.markdown > :first-child {
+  margin-top: 0;
+}
+
+.markdown > :last-child {
+  margin-bottom: 0;
+}
+
+.markdown p,
+.markdown ul,
+.markdown ol {
+  margin: 8px 0;
+}
+
+.markdown ul,
+.markdown ol {
+  padding-left: 20px;
+}
+
+.markdown li {
+  margin-bottom: 4px;
+}
+
+.markdown code {
+  padding: 1px 5px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 4px;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.markdown pre {
+  margin: 8px 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow-x: auto;
+}
+
+.markdown pre code {
+  padding: 0;
+  border: 0;
+  background: none;
+  color: var(--text);
+}
+
+.markdown a {
+  color: var(--accent);
+}
+
 /* ── composer ───────────────────────────────────────────────────────────── */
 
 .composer {

@@ -133,21 +133,55 @@ class Diagnosis:
 
 
 @dataclass
+class Message:
+    """A conversational agent reply — the *other* response shape besides a full
+    `Diagnosis`. Used for follow-ups where a rigid diagnosis is overkill (e.g.
+    the engineer asks "how do I rerun the service?"): felix answers directly in
+    Markdown (`text`), optionally citing memory, with no forced
+    root_cause/steps/confidence. The model chooses `Diagnosis` vs `Message` per
+    turn via a `"type"` discriminator; see IncidentDiagnoser._parse_response."""
+
+    text: str  # GitHub-flavored Markdown
+    cited_incident_ids: list[str] = field(default_factory=list)
+    cited_change_ids: list[str] = field(default_factory=list)
+    incident_id: str | None = None
+
+
+# The two response shapes the reasoning layer can produce for one turn.
+AgentResponse = Diagnosis | Message
+
+
+@dataclass
 class DiagnosisResult:
-    """A diagnosis plus the evidence packet it was reasoned over.
+    """An agent response plus the evidence packet it was reasoned over.
 
     `IncidentResponder.respond()` returns this so a single gather serves both
-    the diagnosis and the evidence display (the CLI's blocks [1]-[5], the API's
-    /chat response). `IncidentResponder.diagnose()` still returns just the
-    `Diagnosis` for callers that don't need the packet.
+    the response and the evidence display (the CLI's blocks [1]-[5], the API's
+    /chat response). The response is a `Diagnosis` (first turns, and re-diagnoses)
+    or a lightweight `Message` (conversational follow-ups) — see `response_type`.
+    `IncidentResponder.diagnose()` still returns just the `Diagnosis` for callers
+    that don't need the packet.
 
     `session_id` is the working-memory `active_incidents.id` this turn belongs
     to — returned so the caller can echo it on the next turn to continue the
     same conversation (multi-turn follow-ups)."""
 
-    diagnosis: Diagnosis
+    response: AgentResponse
     evidence: EvidencePacket
     session_id: str | None = None
+
+    @property
+    def response_type(self) -> str:
+        """The discriminator the API/frontend switch on: "message" or "diagnosis"."""
+        return "message" if isinstance(self.response, Message) else "diagnosis"
+
+    @property
+    def diagnosis(self) -> Diagnosis | None:
+        """Back-compat accessor: the Diagnosis when this turn produced one, else
+        None (a conversational `message` follow-up). First-turn results are
+        always diagnoses, so single-turn callers (CLI, tests, CDC watcher) can
+        rely on it being present."""
+        return self.response if isinstance(self.response, Diagnosis) else None
 
 
 # ── working memory: active incident conversations ────────────────────────────

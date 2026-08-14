@@ -57,7 +57,7 @@ sample_project/
   WORLD.md            # AUTHORITATIVE ground truth — every seed conforms to the names/logs/facts here
 src/                  # layered: cli/api -> service -> clients/store -> models/config
   config.py           # Settings dataclass (reads .env once); swap env files, not code
-  models.py           # domain dataclasses: Incident, DocChunk, CodeChange, CodeNode, GraphHit, Recall[T], EvidencePacket, Diagnosis, DiagnosisResult
+  models.py           # domain dataclasses: Incident, DocChunk, CodeChange, CodeNode, GraphHit, Recall[T], EvidencePacket, Diagnosis, Message, AgentResponse (=Diagnosis|Message), DiagnosisResult
   cli.py / __main__.py# `python -m src {respond,seed,parse,mcp-probe,serve}` entry point
   clients/
     embedder/         # Embedder ABC + get_embedder(); titan.py (Bedrock), local.py (bge-large-en-v1.5). Both 1024-dim
@@ -191,7 +191,9 @@ Done & verified locally:
   negative control, citation integrity, `--no-llm` no-writes, no-orphan-rows).
 - **The HTTP API** (`src/api/`, FastAPI) — a second thin driver over the service
   layer alongside the CLI. `python -m src serve` exposes `POST /chat` →
-  `{diagnosis, evidence, session_id}`, `POST /chat/stream` → the same loop as
+  `{response_type, diagnosis, message, evidence, session_id}` (a tagged union:
+  `response_type` says whether this turn is a full `diagnosis` or a lightweight
+  conversational `message` — the other field is null), `POST /chat/stream` → the same loop as
   **Server-Sent Events** (an `evidence` frame after recall, `delta` frames as the
   model generates, then a `done` frame with the full envelope — the frontend
   drives the live-reasoning UI off this), `POST /recall` → `{evidence}`

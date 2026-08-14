@@ -1,6 +1,7 @@
 import { useEffect, useRef } from "react";
 import type { Turn } from "../App";
 import { DiagnosisCard } from "./DiagnosisCard";
+import { MessageBubble } from "./MessageBubble";
 
 export function ChatThread({
   turns,
@@ -55,13 +56,20 @@ export function ChatThread({
                 <StreamingReasoning text={turn.streamingText} />
               )}
               {turn.error && <div className="error">{turn.error}</div>}
-              {turn.response && (
-                <DiagnosisCard
-                  diagnosis={turn.response.diagnosis}
-                  active={turn.id === activeId}
-                  onShowEvidence={() => onSelect(turn.id)}
-                />
-              )}
+              {turn.response &&
+                (turn.response.response_type === "message" && turn.response.message ? (
+                  <MessageBubble
+                    message={turn.response.message}
+                    active={turn.id === activeId}
+                    onShowEvidence={() => onSelect(turn.id)}
+                  />
+                ) : turn.response.diagnosis ? (
+                  <DiagnosisCard
+                    diagnosis={turn.response.diagnosis}
+                    active={turn.id === activeId}
+                    onShowEvidence={() => onSelect(turn.id)}
+                  />
+                ) : null)}
             </div>
           </div>
         </div>

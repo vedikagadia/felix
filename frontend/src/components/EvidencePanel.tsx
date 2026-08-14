@@ -1,5 +1,5 @@
 import type { Turn } from "../App";
-import type { EvidencePacket, Diagnosis } from "../api/types";
+import type { EvidencePacket } from "../api/types";
 
 export function EvidencePanel({ turn }: { turn: Turn | null }) {
   if (!turn) {
@@ -28,7 +28,9 @@ export function EvidencePanel({ turn }: { turn: Turn | null }) {
   // Evidence arrives (streamed) before the final response, so prefer whichever
   // we have — this lets the panel fill while the diagnosis is still generating.
   const evidence = turn.response?.evidence ?? turn.evidence;
-  const diagnosis = turn.response?.diagnosis;
+  // Citations come from whichever response shape landed (diagnosis OR message);
+  // both carry cited_*_ids. Absent while evidence is still streaming in.
+  const cited = turn.response?.diagnosis ?? turn.response?.message ?? null;
 
   if (!evidence) {
     if (turn.error) {
@@ -37,18 +39,32 @@ export function EvidencePanel({ turn }: { turn: Turn | null }) {
     return <div className="evidence__empty">Gathering evidence…</div>;
   }
 
-  return <EvidenceBody packet={evidence} diagnosis={diagnosis} />;
+  return (
+    <EvidenceBody
+      packet={evidence}
+      citedIncidentIds={cited?.cited_incident_ids}
+      citedChangeIds={cited?.cited_change_ids}
+    />
+  );
 }
 
 function dist(d: number) {
   return d.toFixed(3);
 }
 
-function EvidenceBody({ packet, diagnosis }: { packet: EvidencePacket; diagnosis?: Diagnosis }) {
-  // diagnosis is absent while evidence is streaming in ahead of the reasoning;
-  // citation highlights simply light up once it lands.
-  const citedInc = new Set(diagnosis?.cited_incident_ids ?? []);
-  const citedChg = new Set(diagnosis?.cited_change_ids ?? []);
+function EvidenceBody({
+  packet,
+  citedIncidentIds,
+  citedChangeIds,
+}: {
+  packet: EvidencePacket;
+  citedIncidentIds?: string[];
+  citedChangeIds?: string[];
+}) {
+  // citations are absent while evidence is streaming in ahead of the reasoning;
+  // the highlights simply light up once the response lands.
+  const citedInc = new Set(citedIncidentIds ?? []);
+  const citedChg = new Set(citedChangeIds ?? []);
 
   return (
     <div className="evidence__body">

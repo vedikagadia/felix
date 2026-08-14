@@ -18,7 +18,16 @@ import re
 from typing import Any
 
 from ..clients.llm import LLMClient
-from ..models import ActiveIncidentTurn, Diagnosis, DiagnosisResult, EvidencePacket, LLMResult, ResolutionStep
+from ..models import (
+    ActiveIncidentTurn,
+    AgentResponse,
+    Diagnosis,
+    DiagnosisResult,
+    EvidencePacket,
+    LLMResult,
+    Message,
+    ResolutionStep,
+)
 from ..store.repositories import ActionRepository, ActiveIncidentRepository, IncidentRepository
 from .evidence_gatherer import EvidenceGatherer
 
@@ -46,8 +55,12 @@ _SYSTEM_PROMPT = (
     "single source, say so. State a confidence 0..1. Never invent ids."
 )
 
-_JSON_SCHEMA_HINT = """Return ONLY a JSON object (no prose, no markdown fences) matching exactly:
-{
+# Two response shapes, discriminated by "type". A full diagnosis is the heavy
+# structured answer (drives citation highlighting + episodic write-back); a
+# message is a light conversational reply used for follow-up questions where a
+# rigid diagnosis would be awkward. The frontend renders each shape differently.
+_DIAGNOSIS_SCHEMA = """{
+  "type": "diagnosis",
   "summary": "one-line what's wrong",
   "root_cause": "the true cause, or null if unknown",
   "proposed_steps": [
@@ -57,6 +70,32 @@ _JSON_SCHEMA_HINT = """Return ONLY a JSON object (no prose, no markdown fences) 
   "cited_change_ids": ["...ids copied verbatim from the 'id:' fields above..."],
   "confidence": 0.0
 }"""
+
+_MESSAGE_SCHEMA = """{
+  "type": "message",
+  "text": "a direct, conversational answer in GitHub-flavored Markdown (use a fenced code block for any command)",
+  "cited_incident_ids": ["...ids copied verbatim from the 'id:' fields above, if any..."],
+  "cited_change_ids": ["...ids copied verbatim from the 'id:' fields above, if any..."]
+}"""
+
+# First turn (a fresh alert): always a full diagnosis.
+_FIRST_TURN_HINT = (
+    "Return ONLY a JSON object (no prose, no markdown fences) — a diagnosis matching exactly:\n"
+    + _DIAGNOSIS_SCHEMA
+)
+
+# Follow-up turn: default to a conversational message; escalate to a diagnosis
+# only when the engineer reports a genuinely new/changed problem.
+_FOLLOW_UP_HINT = (
+    "Return ONLY a JSON object (no prose, no markdown fences). The engineer is "
+    "asking a follow-up about the incident above — usually answer it directly "
+    "with a message:\n"
+    + _MESSAGE_SCHEMA
+    + "\n\nONLY if they are reporting a NEW or materially changed problem that "
+    "needs fresh root-cause analysis, return a diagnosis instead:\n"
+    + _DIAGNOSIS_SCHEMA
+    + '\n\nThe "type" field tells felix how to render your answer — always set it.'
+)
 
 
 class IncidentDiagnoser:
@@ -122,11 +161,12 @@ class IncidentDiagnoser:
         # have happened yet, so a failed call leaves no partial rows.
         result = self.llm.complete(prompt, system=_SYSTEM_PROMPT)
 
-        # 5. PARSE DEFENSIVELY + citation-integrity guard.
-        diagnosis = self._parse_diagnosis(result.text, packet)
+        # 5. PARSE DEFENSIVELY + citation-integrity guard. Follow-ups may answer
+        # with a lightweight message; first turns are always a full diagnosis.
+        response = self._parse_response(result.text, packet, allow_message=session is not None)
 
         # 6-7. WRITE-BACK + return (shared with the streaming path).
-        return self._finish(alert, origin_node, resolved_service, diagnosis, result, packet, session, source)
+        return self._finish(alert, origin_node, resolved_service, response, result, packet, session, source)
 
     def respond_stream(
         self,
@@ -170,9 +210,9 @@ class IncidentDiagnoser:
         # write-back/audit (model id from the client; token counts unavailable
         # mid-stream, so left None — the audit still records model + output).
         result = LLMResult(text=full_text, model=self.llm.model_id, input_tokens=None, output_tokens=None)
-        diagnosis = self._parse_diagnosis(full_text, packet)
+        response = self._parse_response(full_text, packet, allow_message=session is not None)
 
-        yield ("done", self._finish(alert, origin_node, resolved_service, diagnosis, result, packet, session, source))
+        yield ("done", self._finish(alert, origin_node, resolved_service, response, result, packet, session, source))
 
     def _prepare(
         self, alert: str, origin_node: str | None, k: int, session_id: str | None
@@ -211,7 +251,7 @@ class IncidentDiagnoser:
         alert: str,
         origin_node: str | None,
         resolved_service: str | None,
-        diagnosis: Diagnosis,
+        response: AgentResponse,
         result,
         packet: EvidencePacket,
         session,
@@ -225,15 +265,17 @@ class IncidentDiagnoser:
         # mid-sequence failure rolls back cleanly (no orphan rows). The repos
         # share the single connection, so one transaction spans all writes.
         if session is not None:
-            result_session_id = self._write_follow_up(session, alert, diagnosis, result, total_tokens)
+            # A follow-up (message OR re-diagnosis) is working memory only — no
+            # new episodic incident. First turns are always a Diagnosis.
+            result_session_id = self._write_follow_up(session, alert, response, result, total_tokens)
         else:
             result_session_id = self._write_first_turn(
-                alert, origin_node, resolved_service, diagnosis, result, total_tokens, source
+                alert, origin_node, resolved_service, response, result, total_tokens, source
             )
 
-        # return the diagnosis + the evidence it reasoned over + the session to
+        # return the response + the evidence it reasoned over + the session to
         # continue (packet.upstream now reflects any Option-B trace above).
-        return DiagnosisResult(diagnosis=diagnosis, evidence=packet, session_id=result_session_id)
+        return DiagnosisResult(response=response, evidence=packet, session_id=result_session_id)
 
     def _write_first_turn(
         self,
@@ -287,20 +329,23 @@ class IncidentDiagnoser:
         return session_id
 
     def _write_follow_up(
-        self, session, alert: str, diagnosis: Diagnosis, result, total_tokens: int
+        self, session, alert: str, response: AgentResponse, result, total_tokens: int
     ) -> str:
         """Follow-up turn: record the exchange in working memory only (no new
-        episodic incident). Carries the session's original incident id onto the
-        diagnosis so the UI still links to the incident being discussed."""
-        diagnosis.incident_id = session.incident_id
+        episodic incident), whether the response is a lightweight message or a
+        re-diagnosis. Carries the session's original incident id onto the
+        response so the UI still links to the incident being discussed."""
+        response.incident_id = session.incident_id
+        # The agent's transcript line is the message text or the diagnosis summary.
+        agent_content = response.text if isinstance(response, Message) else response.summary
         with self.incident_repo.conn.transaction():
             self.active_repo.append_turn(session.id, role="user", content=alert)
-            self.active_repo.append_turn(session.id, role="agent", content=diagnosis.summary)
+            self.active_repo.append_turn(session.id, role="agent", content=agent_content)
             self.action_repo.log(
                 action_type="follow_up",
                 tool_called="respond",
                 input={"alert": alert, "session_id": session.id},
-                output=_diagnosis_to_dict(diagnosis),
+                output=_response_to_dict(response),
                 model=result.model,
                 tokens=total_tokens or None,
             )
@@ -358,7 +403,7 @@ class IncidentDiagnoser:
         # the contract's instruction to cite ids that MUST be present verbatim
         # in the context we send, we cite the UUID that IS on the packet's
         # item.id — the same string is printed in the context below and is
-        # what we filter model citations against in _parse_diagnosis. This is
+        # what we filter model citations against in _parse_response. This is
         # the retrieval-facing id gap the contract flags for the orchestrator:
         # a follow-up (Team C) could add a human-id passthrough so citations
         # read as "inc-0001" instead of a UUID.
@@ -423,36 +468,73 @@ class IncidentDiagnoser:
                 sections.append(f"  source:\n{src}")
         sections.append("")
 
-        sections.append(_JSON_SCHEMA_HINT)
+        # First turn → force a full diagnosis. Follow-up → let the model choose
+        # a conversational message (default) or a re-diagnosis.
+        sections.append(_FOLLOW_UP_HINT if history else _FIRST_TURN_HINT)
         return "\n".join(sections)
 
     # ── defensive parsing + citation-integrity guard ────────────────────────
 
-    def _parse_diagnosis(self, text: str, packet: EvidencePacket) -> Diagnosis:
+    def _parse_response(
+        self, text: str, packet: EvidencePacket, *, allow_message: bool
+    ) -> AgentResponse:
+        """Parse the completion into the response shape the model chose.
+
+        Dispatch on the `"type"` discriminator: `"message"` → a conversational
+        `Message` (only permitted when `allow_message`, i.e. on a follow-up),
+        anything else → a full `Diagnosis`. Never raises: unparseable output
+        degrades to a bare-text message (follow-ups) or a minimal diagnosis."""
         obj = _extract_json_object(text)
 
         if obj is None:
-            # Non-JSON (or unparseable) completion: never raise, fall back to a
-            # minimal Diagnosis carrying the raw text as the summary.
-            return Diagnosis(
-                summary=text[:500],
-                root_cause=None,
-                proposed_steps=[],
-                cited_incident_ids=[],
-                cited_change_ids=[],
-                confidence=None,
-            )
+            # Non-JSON (or unparseable) completion: never raise.
+            if allow_message:
+                return Message(text=text[:2000] or "(no answer)")
+            return Diagnosis(summary=text[:500], proposed_steps=[])
 
+        rtype = obj.get("type")
+        # A message when the model says so, or (defensively, on follow-ups) when
+        # the shape looks like one — free "text", no diagnosis "summary".
+        looks_like_message = rtype == "message" or (
+            rtype != "diagnosis" and "text" in obj and "summary" not in obj
+        )
+        if allow_message and looks_like_message:
+            return self._build_message(obj, packet)
+        return self._build_diagnosis(obj, packet, text)
+
+    def _guard_citations(
+        self, obj: dict, packet: EvidencePacket
+    ) -> tuple[list[str], list[str]]:
+        """Citation-integrity guard: keep only cited ids that appear verbatim in
+        the evidence packet (drops hallucinated/invented ids). Shared by both
+        response shapes."""
         valid_incident_ids = {r.item.id for r in packet.incidents}
         valid_change_ids = {r.item.id for r in packet.changes}
-
-        raw_steps = obj.get("proposed_steps")
-        proposed_steps = raw_steps if isinstance(raw_steps, list) else []
-
         cited_incidents = obj.get("cited_incident_ids")
         cited_incidents = cited_incidents if isinstance(cited_incidents, list) else []
         cited_changes = obj.get("cited_change_ids")
         cited_changes = cited_changes if isinstance(cited_changes, list) else []
+        return (
+            [i for i in cited_incidents if isinstance(i, str) and i in valid_incident_ids],
+            [i for i in cited_changes if isinstance(i, str) and i in valid_change_ids],
+        )
+
+    def _build_message(self, obj: dict, packet: EvidencePacket) -> Message:
+        text = obj.get("text")
+        if not isinstance(text, str) or not text:
+            # tolerate a model that put its answer in "summary" instead of "text"
+            alt = obj.get("summary")
+            text = alt if isinstance(alt, str) and alt else "(no answer)"
+        cited_incidents, cited_changes = self._guard_citations(obj, packet)
+        return Message(
+            text=text,
+            cited_incident_ids=cited_incidents,
+            cited_change_ids=cited_changes,
+        )
+
+    def _build_diagnosis(self, obj: dict, packet: EvidencePacket, text: str) -> Diagnosis:
+        raw_steps = obj.get("proposed_steps")
+        proposed_steps = raw_steps if isinstance(raw_steps, list) else []
 
         confidence = obj.get("confidence")
         if isinstance(confidence, (int, float)) and not isinstance(confidence, bool):
@@ -462,19 +544,21 @@ class IncidentDiagnoser:
 
         summary = obj.get("summary")
         if not isinstance(summary, str) or not summary:
-            summary = text[:500]
+            # a mis-typed "message" reaching here still yields a usable summary
+            alt = obj.get("text")
+            summary = alt if isinstance(alt, str) and alt else text[:500]
 
         root_cause = obj.get("root_cause")
         if not isinstance(root_cause, str):
             root_cause = None
 
+        cited_incidents, cited_changes = self._guard_citations(obj, packet)
         return Diagnosis(
             summary=summary,
             root_cause=root_cause,
             proposed_steps=proposed_steps,
-            # citation-integrity guard: drop anything not verbatim in the packet.
-            cited_incident_ids=[i for i in cited_incidents if isinstance(i, str) and i in valid_incident_ids],
-            cited_change_ids=[i for i in cited_changes if isinstance(i, str) and i in valid_change_ids],
+            cited_incident_ids=cited_incidents,
+            cited_change_ids=cited_changes,
             confidence=confidence,
         )
 
@@ -539,8 +623,9 @@ def _extract_json_object(text: str) -> dict | None:
 
     When multiple fenced blocks exist (e.g. the model quoted an example before
     its real answer), scan them LAST-first and prefer one that actually looks
-    like a Diagnosis (has a "summary" key); the answer block is conventionally
-    last. Fall back to the last parseable object, then to the bracket-scan."""
+    like a response (a "type"/"summary"/"text" key — either shape); the answer
+    block is conventionally last. Fall back to the last parseable object, then
+    to the bracket-scan."""
     fenced = [m for m in _FENCED_JSON_RE.findall(text)]
     parsed_fenced: list[dict] = []
     for candidate in reversed(fenced):
@@ -549,7 +634,7 @@ def _extract_json_object(text: str) -> dict | None:
         except json.JSONDecodeError:
             continue
         if isinstance(obj, dict):
-            if "summary" in obj:
+            if any(k in obj for k in ("type", "summary", "text")):
                 return obj
             parsed_fenced.append(obj)
     if parsed_fenced:
@@ -570,6 +655,7 @@ def _diagnosis_to_dict(diagnosis: Diagnosis) -> dict[str, Any]:
     """Plain-dict projection of a Diagnosis for the agent_actions JSONB output
     column (ActionRepository.log json.dumps's whatever it's handed)."""
     return {
+        "type": "diagnosis",
         "summary": diagnosis.summary,
         "root_cause": diagnosis.root_cause,
         "proposed_steps": diagnosis.proposed_steps,
@@ -578,3 +664,21 @@ def _diagnosis_to_dict(diagnosis: Diagnosis) -> dict[str, Any]:
         "confidence": diagnosis.confidence,
         "incident_id": diagnosis.incident_id,
     }
+
+
+def _message_to_dict(message: Message) -> dict[str, Any]:
+    """Plain-dict projection of a Message for the agent_actions JSONB output."""
+    return {
+        "type": "message",
+        "text": message.text,
+        "cited_incident_ids": message.cited_incident_ids,
+        "cited_change_ids": message.cited_change_ids,
+        "incident_id": message.incident_id,
+    }
+
+
+def _response_to_dict(response: AgentResponse) -> dict[str, Any]:
+    """Audit-log projection dispatching on the response shape."""
+    if isinstance(response, Message):
+        return _message_to_dict(response)
+    return _diagnosis_to_dict(response)
