@@ -691,11 +691,97 @@ body {
   font-weight: 600;
 }
 
-.card__dist {
-  font-family: var(--mono);
-  font-size: 12px;
-  color: var(--text-faint);
+/* Relevance bar — L2 distance rendered as a "match %" (raw distance on hover). */
+.relbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
   flex-shrink: 0;
+}
+
+.relbar__track {
+  width: 44px;
+  height: 5px;
+  border-radius: 3px;
+  background: var(--bg-elev2);
+  overflow: hidden;
+}
+
+.relbar__fill {
+  display: block;
+  height: 100%;
+  border-radius: 3px;
+  background: linear-gradient(90deg, var(--accent-dim), var(--accent));
+}
+
+.relbar__pct {
+  font-family: var(--mono);
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+/* Focused via a citation link (hovered chip / hovered card) — a brief pulse. */
+.card--focused {
+  border-color: var(--cite);
+  box-shadow: 0 0 0 2px var(--cite) inset;
+}
+
+/* Expand/collapse ─────────────────────────────────────────────────────────── */
+
+.card__toggle {
+  margin-top: 10px;
+  padding: 0;
+  background: none;
+  border: 0;
+  color: var(--accent);
+  font-size: 12px;
+  cursor: pointer;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.card__toggle:hover {
+  text-decoration: underline;
+}
+
+.card__chev {
+  display: inline-block;
+  transition: transform 0.15s ease;
+}
+
+.card__chev.is-open {
+  transform: rotate(90deg);
+}
+
+.card__details {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px dashed var(--border);
+}
+
+.card__detail h5 {
+  margin: 0 0 4px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-faint);
+}
+
+.card__body--clamp {
+  display: -webkit-box;
+  -webkit-line-clamp: 3;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+
+.steps--compact {
+  padding-left: 16px;
+}
+
+.steps--compact .steps__item {
+  margin-bottom: 6px;
+  font-size: 13px;
 }
 
 .card__meta {
@@ -736,55 +822,165 @@ body {
   color: var(--cite);
 }
 
-/* ── graph trace ────────────────────────────────────────────────────────── */
+/* ── citation chips (diagnosis/message → evidence link) ─────────────────── */
 
-.trace {
+.cites {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  margin-top: 12px;
+}
+
+.cites__label {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  color: var(--text-faint);
+}
+
+.cite {
+  max-width: 100%;
+  padding: 2px 9px;
+  border-radius: 11px;
+  border: 1px solid var(--border);
+  background: var(--bg-elev2);
+  color: var(--text-dim);
+  font-size: 12px;
+  cursor: pointer;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  transition: border-color 0.12s ease, color 0.12s ease, background 0.12s ease;
+}
+
+.cite::before {
+  content: "";
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  margin-right: 6px;
+  vertical-align: middle;
+}
+
+.cite--inc::before {
+  background: var(--inc);
+}
+
+.cite--chg::before {
+  background: var(--chg);
+}
+
+.cite:hover,
+.cite.is-active {
+  border-color: var(--cite);
+  color: var(--text);
+  background: #4a3c17;
+}
+
+/* ── graph trace (connected chain) ──────────────────────────────────────── */
+
+.trace2 {
   list-style: none;
   margin: 0;
   padding: 0;
 }
 
-.trace__hit {
+.trace2__node {
   display: flex;
-  gap: 10px;
-  padding: 8px 0;
-  border-left: 2px solid var(--graph);
-  padding-left: 12px;
-  margin-left: 4px;
+  gap: 12px;
 }
 
-.trace__depth {
-  font-size: 11px;
-  color: var(--text-faint);
-  font-family: var(--mono);
+.trace2__rail {
+  position: relative;
   flex-shrink: 0;
-  padding-top: 2px;
+  width: 12px;
+  display: flex;
+  justify-content: center;
 }
 
-.trace__body {
+/* The connecting line runs the full height of every node… */
+.trace2__rail::before {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 2px;
+  background: var(--graph);
+  opacity: 0.4;
+}
+
+/* …trimmed at the top of the first node and the bottom of the last. */
+.trace2__node:first-child .trace2__rail::before {
+  top: 8px;
+}
+
+.trace2__node:last-child .trace2__rail::before {
+  bottom: calc(100% - 12px);
+}
+
+.trace2__dot {
+  position: relative;
+  z-index: 1;
+  width: 10px;
+  height: 10px;
+  margin-top: 5px;
+  border-radius: 50%;
+  background: var(--bg);
+  border: 2px solid var(--graph);
+}
+
+.trace2__node.is-culprit .trace2__dot {
+  background: var(--cite);
+  border-color: var(--cite);
+  box-shadow: 0 0 0 3px rgba(218, 170, 63, 0.25);
+}
+
+.trace2__body {
   min-width: 0;
+  padding-bottom: 14px;
 }
 
-.trace__name {
+.trace2__head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.trace2__name {
   font-family: var(--mono);
   color: var(--graph);
   font-size: 13px;
 }
 
-.trace__file {
-  display: block;
+.trace2__node.is-culprit .trace2__name {
+  color: var(--cite);
+  font-weight: 600;
+}
+
+.trace2__depth {
   font-size: 11px;
   color: var(--text-faint);
   font-family: var(--mono);
 }
 
-.trace__summary {
+.trace2__file {
+  display: block;
+  font-size: 11px;
+  color: var(--text-faint);
+  font-family: var(--mono);
+  margin-top: 2px;
+}
+
+.trace2__summary {
   margin: 4px 0 0;
   font-size: 13px;
   color: var(--text-dim);
 }
 
-.trace__source {
+.trace2__source {
   margin: 8px 0 0;
   padding: 10px;
   background: var(--bg);
@@ -793,7 +989,20 @@ body {
   font-family: var(--mono);
   font-size: 12px;
   overflow-x: auto;
+  color: var(--text-dim);
+}
+
+.srcline {
+  display: block;
+}
+
+/* The offending line (flagged `<--` in the seed source) jumps out. */
+.srcline--hot {
+  background: rgba(229, 83, 75, 0.14);
   color: var(--text);
+  border-left: 2px solid var(--inc);
+  margin: 0 -10px;
+  padding: 0 8px;
 }
 
 /* ── responsive ─────────────────────────────────────────────────────────── */

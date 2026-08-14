@@ -7,10 +7,14 @@ export function ChatThread({
   turns,
   activeId,
   onSelect,
+  activeCitation,
+  onCitationFocus,
 }: {
   turns: Turn[];
   activeId: number | null;
   onSelect: (id: number) => void;
+  activeCitation: string | null;
+  onCitationFocus: (id: string | null) => void;
 }) {
   const endRef = useRef<HTMLDivElement>(null);
 
@@ -60,14 +64,20 @@ export function ChatThread({
                 (turn.response.response_type === "message" && turn.response.message ? (
                   <MessageBubble
                     message={turn.response.message}
+                    evidence={turn.response.evidence}
                     active={turn.id === activeId}
                     onShowEvidence={() => onSelect(turn.id)}
+                    activeCitation={activeCitation}
+                    onCitationFocus={onCitationFocus}
                   />
                 ) : turn.response.diagnosis ? (
                   <DiagnosisCard
                     diagnosis={turn.response.diagnosis}
+                    evidence={turn.response.evidence}
                     active={turn.id === activeId}
                     onShowEvidence={() => onSelect(turn.id)}
+                    activeCitation={activeCitation}
+                    onCitationFocus={onCitationFocus}
                   />
                 ) : null)}
             </div>

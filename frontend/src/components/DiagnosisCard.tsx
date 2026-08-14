@@ -1,4 +1,5 @@
-import type { Diagnosis, ProposedStep } from "../api/types";
+import type { Diagnosis, EvidencePacket, ProposedStep } from "../api/types";
+import { Citations } from "./Citations";
 
 function isStepObject(s: ProposedStep | string): s is ProposedStep {
   return typeof s === "object" && s !== null;
@@ -6,15 +7,20 @@ function isStepObject(s: ProposedStep | string): s is ProposedStep {
 
 export function DiagnosisCard({
   diagnosis,
+  evidence,
   active,
   onShowEvidence,
+  activeCitation,
+  onCitationFocus,
 }: {
   diagnosis: Diagnosis;
+  evidence?: EvidencePacket;
   active: boolean;
   onShowEvidence: () => void;
+  activeCitation: string | null;
+  onCitationFocus: (id: string | null) => void;
 }) {
   const conf = diagnosis.confidence;
-  const citations = diagnosis.cited_incident_ids.length + diagnosis.cited_change_ids.length;
 
   return (
     <div className="diagnosis">
@@ -48,6 +54,15 @@ export function DiagnosisCard({
         </div>
       )}
 
+      <Citations
+        incidentIds={diagnosis.cited_incident_ids}
+        changeIds={diagnosis.cited_change_ids}
+        evidence={evidence}
+        activeCitation={activeCitation}
+        onCitationFocus={onCitationFocus}
+        onShowEvidence={onShowEvidence}
+      />
+
       <div className="diagnosis__footer">
         {conf != null && (
           <span
@@ -55,11 +70,6 @@ export function DiagnosisCard({
             title="Model-reported confidence"
           >
             confidence {(conf * 100).toFixed(0)}%
-          </span>
-        )}
-        {citations > 0 && (
-          <span className="badge badge--cite" title="Memory records cited by the diagnosis">
-            {citations} citation{citations === 1 ? "" : "s"}
           </span>
         )}
         <button

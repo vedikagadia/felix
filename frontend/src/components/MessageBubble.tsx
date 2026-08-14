@@ -1,5 +1,6 @@
 import ReactMarkdown from "react-markdown";
-import type { Message } from "../api/types";
+import type { EvidencePacket, Message } from "../api/types";
+import { Citations } from "./Citations";
 
 /**
  * A conversational (non-diagnosis) agent reply — the lightweight counterpart to
@@ -10,27 +11,35 @@ import type { Message } from "../api/types";
  */
 export function MessageBubble({
   message,
+  evidence,
   active,
   onShowEvidence,
+  activeCitation,
+  onCitationFocus,
 }: {
   message: Message;
+  evidence?: EvidencePacket;
   active: boolean;
   onShowEvidence: () => void;
+  activeCitation: string | null;
+  onCitationFocus: (id: string | null) => void;
 }) {
-  const citations = message.cited_incident_ids.length + message.cited_change_ids.length;
-
   return (
     <div className="message">
       <div className="message__body markdown">
         <ReactMarkdown>{message.text}</ReactMarkdown>
       </div>
 
+      <Citations
+        incidentIds={message.cited_incident_ids}
+        changeIds={message.cited_change_ids}
+        evidence={evidence}
+        activeCitation={activeCitation}
+        onCitationFocus={onCitationFocus}
+        onShowEvidence={onShowEvidence}
+      />
+
       <div className="diagnosis__footer">
-        {citations > 0 && (
-          <span className="badge badge--cite" title="Memory records cited by this reply">
-            {citations} citation{citations === 1 ? "" : "s"}
-          </span>
-        )}
         <button
           className={`btn btn--ghost ${active ? "is-active" : ""}`}
           onClick={onShowEvidence}

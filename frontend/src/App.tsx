@@ -73,6 +73,10 @@ export function App() {
   // The active-incident conversation. null = the next alert opens a fresh
   // incident; set = follow-ups continue the same conversation (multi-turn).
   const [sessionId, setSessionId] = useState<string | null>(null);
+  // The evidence id (incident/change) currently focused via a citation link —
+  // hovering a diagnosis citation chip or an evidence card sets it, so the two
+  // panes highlight each other. null = nothing focused.
+  const [activeCitation, setActiveCitation] = useState<string | null>(null);
 
   const activeTurn = turns.find((t) => t.id === activeId) ?? null;
 
@@ -173,7 +177,13 @@ export function App() {
 
       <main className="app__body">
         <section className="chat">
-          <ChatThread turns={turns} activeId={activeId} onSelect={setActiveId} />
+          <ChatThread
+            turns={turns}
+            activeId={activeId}
+            onSelect={setActiveId}
+            activeCitation={activeCitation}
+            onCitationFocus={setActiveCitation}
+          />
           <AlertComposer
             onSubmit={submit}
             disabled={busy}
@@ -183,7 +193,11 @@ export function App() {
         </section>
 
         <aside className="evidence">
-          <EvidencePanel turn={activeTurn} />
+          <EvidencePanel
+            turn={activeTurn}
+            activeCitation={activeCitation}
+            onCitationFocus={setActiveCitation}
+          />
         </aside>
       </main>
     </div>

@@ -60,6 +60,22 @@ const POOL_SCENARIO: ChatResponse = {
             "Investigated as DB capacity at the time; scaling the primary gave only partial relief.",
           service: "checkout-service",
           severity: "SEV2",
+          tags: ["pool", "checkout", "traffic-spike"],
+          occurred_at: "2026-07-30T09:12:00Z",
+          resolution_steps: [
+            {
+              step_order: 1,
+              action: "Scaled the primary DB vertically",
+              command: null,
+              outcome: "Only partial relief — exhaustion recurred at the next spike",
+            },
+            {
+              step_order: 2,
+              action: "Raised the connection-pool max size",
+              command: null,
+              outcome: "Delayed the symptom but did not fix the underlying hold",
+            },
+          ],
         },
       },
     ],
