@@ -28,3 +28,6 @@ docs/
 
 # Scratch test-run captures
 live-test-output.txt
+
+# Demo pipeline generated artifacts (regenerable via python -m demo.orchestrate)
+demo/out/
