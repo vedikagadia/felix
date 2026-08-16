@@ -222,6 +222,69 @@ export interface MetricSample {
   labels?: Record<string, unknown> | null;
 }
 
+/**
+ * Default alert levels for the live-monitoring panel, from `GET /metrics/config`
+ * (env-configured on the backend). `default_p99_ms` applies to any latency
+ * metric without a specific entry; `thresholds` maps a metric name to its own
+ * p99 threshold. The panel seeds each card's alert level from this — the
+ * operator can still override any card's level live.
+ */
+export interface MetricConfig {
+  default_p99_ms: number;
+  thresholds: Record<string, number>;
+}
+
+// ── DB overview (via the CockroachDB Cloud MCP server) ───────────────────────
+
+/** Cluster metadata from the MCP `get_cluster` tool. */
+export interface DbClusterInfo {
+  id: string;
+  name: string;
+  cockroach_version: string;
+  cloud_provider: string;
+  state: string;
+  plan: string;
+  regions: Array<{ name: string; node_count: number }>;
+  created_at: string;
+  updated_at: string;
+}
+
+/** One database row from the MCP `list_databases` tool. */
+export interface DbDatabase {
+  database_name: string;
+  owner?: string | null;
+  primary_region?: string | null;
+  regions?: string[];
+}
+
+/** One table row from the MCP `list_tables` tool. */
+export interface DbTable {
+  schema_name: string;
+  table_name: string;
+  type: string;
+  owner?: string | null;
+  estimated_row_count?: number | null;
+  locality?: string | null;
+}
+
+/**
+ * Response from `GET /db/overview` — a read-only cluster snapshot gathered
+ * through the CockroachDB Cloud Managed MCP Server (felix as its own MCP
+ * client). `connected` is false (with a `reason`) when the MCP endpoint isn't
+ * configured or auth/connection failed, so the panel renders a soft state
+ * rather than erroring. `tools_used` names the MCP tools this snapshot invoked.
+ */
+export interface DbOverview {
+  connected: boolean;
+  reason?: string;
+  source?: string;
+  cluster?: DbClusterInfo | null;
+  databases?: DbDatabase[];
+  tables_by_db?: Record<string, DbTable[]>;
+  running_queries?: Array<Record<string, unknown>>;
+  tools_used?: string[];
+}
+
 /** One pre-seeded turn of a CDC session's transcript (`GET /sessions/{id}`). */
 export interface SessionTurn {
   turn_order: number;

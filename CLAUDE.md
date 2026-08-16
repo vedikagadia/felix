@@ -18,11 +18,20 @@ incidents/docs/changes — `embedding <-> %s::VECTOR(1024)` against
 `*_embedding_idx`) and **(2) recursive-CTE graph traversal** (`WITH RECURSIVE`
 over `code_edges` for the upstream symptom-origin trace). AWS: **Bedrock** —
 Claude for reasoning (`clients/llm/bedrock.py`), Titan for embeddings
-(`clients/embedder/titan.py`). The Managed **MCP Server** (`clients/cockroach_mcp.py`
-+ the `mcp-probe` CLI command) is wired as a real, invokable entry point but is
-a *stretch* second-offering candidate: it's gated on a live `CRDB_MCP_URL`
-(Cloud is currently 403-blocked), so it is NOT counted toward the ≥2 today —
-the two above are, and both are verified running.
+(`clients/embedder/titan.py`).
+
+Beyond the vector type, felix now also exercises the **CockroachDB Cloud
+Managed MCP Server** as a genuine, named second offering: `clients/cockroach_mcp.py`
+is felix's *own* MCP client (the `mcp` Python SDK), authenticated to
+`https://cockroachlabs.cloud/mcp` via **OAuth** (browser consent once, tokens
+cached to `.crdb-mcp-tokens.json`, headless after) against the live `felix-db`
+Cloud cluster (id in `CRDB_MCP_CLUSTER_ID`, sent as the `mcp-cluster-id`
+header). The **DB overview** page (`GET /db/overview`) is powered entirely by
+read-only MCP tool calls (`get_cluster` / `list_databases` / `list_tables` /
+`show_running_queries`) — no direct SQL on that path. So the two named CockroachDB
+offerings felix uses (vector indexing + the Managed MCP Server) are both
+verified running; the recursive-CTE graph trace and the CDC changefeed are
+additional CockroachDB capabilities on top, not the counted offerings.
 
 This is a **personal project** on the `vedikagadia` GitHub account. Commit as
 Vedika Gadia / the vedikagadia noreply email. **Never commit under a Salesforce
@@ -64,7 +73,7 @@ src/                  # layered: cli/api -> service -> clients/store -> models/c
   cli.py / __main__.py# `python -m src {respond,seed,parse,mcp-probe,serve}` entry point
   clients/
     embedder/         # Embedder ABC + get_embedder(); titan.py (Bedrock), local.py (bge-large-en-v1.5). Both 1024-dim
-    cockroach_mcp.py  # thin client for the CockroachDB Managed MCP Server (recall path; later spike)
+    cockroach_mcp.py  # felix's own client for the CockroachDB Cloud MCP Server (OAuth + mcp-cluster-id header; powers `mcp-probe` and GET /db/overview)
   monitoring/         # Probe — reusable timing wrapper (@probe.timed / with probe.measure) that records
                       #   measured wall-clock latency into `metrics`; attach to any service (checkout is first)
   store/
@@ -73,7 +82,7 @@ src/                  # layered: cli/api -> service -> clients/store -> models/c
   service/
     evidence_gatherer.py # EvidenceGatherer(conn, embedder) -> EvidencePacket (retrieval half of the loop)
     diagnoser.py      # IncidentDiagnoser: respond(session_id?) -> DiagnosisResult (reason + write-back, multi-turn aware); respond_stream() = SSE generator twin; diagnose() returns just the Diagnosis
-  api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /chat/stream [SSE], /recall, /incidents, /incidents/search, /incidents/{id}/feedback, /metrics/recent, /metrics/stream [SSE, CDC-backed], /alerts, /sessions/{id}, /health), schemas.py (serialize to the frontend contract)
+  api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /chat/stream [SSE], /recall, /incidents, /incidents/search, /incidents/{id}/feedback, /metrics/config, /metrics/recent, /metrics/stream [SSE, CDC-backed], /db/overview [via CockroachDB MCP], /alerts, /sessions/{id}, /health), schemas.py (serialize to the frontend contract)
   seed/
     parser.py         # AST -> code graph (42 nodes / 22 edges), deterministic uuid5 ids
     loader.py         # Seeder: parse + embed + insert -> the integration seam
@@ -223,16 +232,24 @@ Done & verified locally:
   `http://localhost:8000` is committed) to hit the API. `npm run build` +
   typecheck pass.
 
+Done & verified (MCP):
+- **CockroachDB Cloud Managed MCP Server — LIVE.** `python -m src mcp-probe`
+  connects felix's own client to `https://cockroachlabs.cloud/mcp` (OAuth
+  consent once, tokens cached) and lists 12 tools; `GET /db/overview` + the
+  **DB overview** frontend page render a read-only cluster snapshot gathered
+  purely through MCP tool calls, verified against the live `felix-db` cluster.
+  This is the counted second CockroachDB offering.
+
 Not yet built / deferred:
 - **Bedrock model access** (Claude + Titan) — long-lead, needs the AWS console;
   until then `EMBED_PROVIDER=local`.
-- **CockroachDB Cloud cluster** — blocked on a 403 (role/billing); local node
-  substitutes. Flip `DATABASE_URL` when resolved.
-- **MCP Server discovery spike** — `clients/cockroach_mcp.py` is now invokable
-  via `python -m src mcp-probe` (connects + lists the server's tools); needs a
-  live `CRDB_MCP_URL` / `CRDB_MCP_API_KEY` to actually run (auth header /
-  transport may need adjustment against the live endpoint). Until Cloud is
-  unblocked it's a stretch second-offering candidate, not the counted one.
+- **CockroachDB Cloud cluster** — the `felix-db` Basic cluster now exists (used
+  live by the MCP path). `DATABASE_URL` still points at the local node for the
+  recall/reasoning/CDC paths; flip it to Cloud when ready (the Cloud cluster
+  already carries the seed tables).
+- **Headless MCP auth** — the OAuth flow needs a one-time browser consent; a
+  service-account bearer token (`CRDB_MCP_API_KEY`) would make it fully headless
+  (the client already prefers it when set), if the org issues one.
 - A considered-but-deferred idea: **graph-boosted change ranking** (union +
   boost changes that touch on-path files, rather than graph-*filtering* them —
   filtering would break Incident B). See `respond.py` discussion.
@@ -294,6 +311,36 @@ The frontend renders 👍/👎 on each `DiagnosisCard` (keyed on
 embeddings and a NULL feedback, so they stay recallable exactly as before — the
 gate only applies to live-diagnosed rows.
 
+## DB overview (via the CockroachDB Cloud Managed MCP Server)
+
+A read-only view of the live cluster, powered end-to-end by MCP — the concrete
+demonstration that felix *uses* the Managed MCP Server (not just Claude Code).
+
+- **felix's client** (`src/clients/cockroach_mcp.py`): the `mcp` Python SDK
+  talking to `https://cockroachlabs.cloud/mcp`. Sends the required
+  `mcp-cluster-id` header. Auth is **OAuth** by default — first `connect()`
+  opens a browser consent (a one-shot localhost callback captures the code),
+  then tokens are cached to `.crdb-mcp-tokens.json` (gitignored) and reused
+  headlessly; a service-account `CRDB_MCP_API_KEY` bearer token is used instead
+  when set. `connect()` / `list_tools()` / `call_tool()` are the primitives;
+  `gather_overview()` + the sync `fetch_overview()` assemble the snapshot from a
+  strict **read-only allowlist** (`OVERVIEW_TOOLS` — never create/insert).
+- **The endpoint** (`GET /db/overview`): calls `fetch_overview()` and returns
+  `{connected, source, cluster, databases, tables_by_db, running_queries,
+  tools_used}`. Degrades to `{connected:false, reason}` (HTTP 200) when MCP
+  isn't configured or auth/connection fails, so the panel renders a soft state
+  rather than 500ing. Talks to the cluster purely over MCP — no `DATABASE_URL`
+  connection on this path.
+- **The panel** (`frontend/src/components/DbOverviewPage.tsx`, "DB overview"
+  nav tab): a cluster card (name / version / provider / plan / regions + the
+  MCP tools invoked), per-database table lists with estimated row-count bars,
+  and a live running-queries card. Seam is `frontend/src/api/db.ts` (mock mode
+  synthesizes the `felix-db` snapshot so it's demoable offline).
+- **`python -m src mcp-probe`** connects + lists the server's tools (12 as of
+  writing: get_cluster, list/create databases + tables, select_query,
+  insert_rows, explain_query, show_running_queries, show_statement, …). Run it
+  once to complete the OAuth consent that seeds the token cache.
+
 ## Live monitoring (CDC — observe services in real time)
 
 A **reusable timing wrapper** + a **live panel** that watches instrumented
@@ -306,10 +353,14 @@ path (which trips → auto-triages): this is the *observe-it-live* view.
   row per call, labelled `{"ok": bool}`. Generic: attach to any callable/service.
 - **The sample service** is genuinely instrumented: `sample_project/run.py` now
   *calls* `CheckoutHandler.process` in a loop with the probe attached (no more
-  fabricated numbers). `payment_gateway.py` sleeps a simulated round-trip and
-  degrades every `GATEWAY_SLOW_EVERY`-th charge into exactly one real
-  retry/backoff — a bounded ~1s tail spike over a ~100ms/mean<300ms baseline
-  (the avg-hides-the-tail shape). Verified: p99≈1.2s, mean≈180ms.
+  fabricated numbers). It wraps **three** callables — one card each on the panel:
+  `checkout-service`/`checkout_latency_ms` (whole request),
+  `payment-gateway`/`payment_latency_ms` (where the spike originates), and
+  `fulfillment`/`enqueue_latency_ms` (fast → a healthy card). `payment_gateway.py`
+  sleeps a simulated round-trip and degrades every `GATEWAY_SLOW_EVERY`-th charge
+  into exactly one real retry/backoff — a bounded ~1s tail spike over a
+  ~100ms/mean<300ms baseline (the avg-hides-the-tail shape). Verified: checkout
+  & payment p99≈1.2s, mean≈150–180ms; enqueue ≈0ms.
 - **The stream**: `GET /metrics/stream` holds a sinkless
   `EXPERIMENTAL CHANGEFEED FOR metrics` and relays each new row as an SSE
   `sample` frame (its OWN connection — a changefeed portal can't be shared).
@@ -320,8 +371,19 @@ path (which trips → auto-triages): this is the *observe-it-live* view.
   `/metrics/stream` via native `EventSource` (a plain GET SSE — no hand-rolled
   parser, unlike `/chat/stream`), and renders one card per `(service, metric)`
   **automatically** — a live value, sparkline w/ threshold line, rolling p99/avg,
-  and a **⚠ tail latency high** badge when p99 ≥ 1000ms. The stream seam lives in
-  `frontend/src/api/metrics.ts` (mock mode synthesizes the same shape).
+  and a **⚠ tail latency high** badge when p99 ≥ the card's alert level. The
+  stream seam lives in `frontend/src/api/metrics.ts` (mock mode synthesizes the
+  same shape). When a card is red it also shows an **Ask felix →** button that
+  jumps to Triage with a synthesized alert pre-filled from the card's live
+  p99/avg numbers (the same jump-to-Triage flow as the library's "Ask AI", via
+  `App.askFelixAbout`) — one click from "a card went red" to triaging the spike.
+- **Configurable alert levels**: `GET /metrics/config` serves the default p99
+  thresholds from `Settings` (`METRIC_ALERT_DEFAULT_P99_MS` global default +
+  `METRIC_ALERT_THRESHOLDS` per-metric JSON, both in `.env`). The panel seeds
+  each card from that, and **every card's alert level is editable live** (a p99
+  number input); an override persists in `localStorage` (`felix:alert:<svc>::<metric>`)
+  and can be reset back to the configured default. So the trip threshold is
+  settable both by ops (env) and by the operator (UI).
 - **Caveat**: the sample fulfillment queue never drains (no worker), so a
   *very* long `run.py` session eventually hits `QueueFull` at `QUEUE_MAX_DEPTH`
   (5000) — the driver catches it, logs, and still emits the latency sample. Fine

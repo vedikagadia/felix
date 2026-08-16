@@ -193,24 +193,28 @@ def _cmd_parse(args: argparse.Namespace) -> None:
 
 
 def _cmd_mcp_probe(args: argparse.Namespace) -> None:
-    """Connect to the CockroachDB Managed MCP Server and list the tools it
-    advertises — the discovery spike, made runnable. Requires CRDB_MCP_URL /
-    CRDB_MCP_API_KEY (Cloud Console MCP config); prints a clear message rather
-    than a traceback when they're unset."""
+    """Connect to the CockroachDB Cloud MCP Server and list the tools it
+    advertises. Requires CRDB_MCP_URL + CRDB_MCP_CLUSTER_ID; auth is OAuth
+    (opens a browser on first run, then caches tokens) unless a service-account
+    CRDB_MCP_API_KEY is set. Prints a clear message rather than a traceback when
+    the endpoint isn't configured."""
     import asyncio
 
     from .clients import cockroach_mcp
 
     settings = get_settings()
-    if not settings.crdb_mcp_url or not settings.crdb_mcp_api_key:
-        print("mcp-probe: CRDB_MCP_URL / CRDB_MCP_API_KEY are not set.")
-        print("  Set them from the Cloud Console MCP config snippet, then re-run.")
+    if not settings.crdb_mcp_url or not settings.crdb_mcp_cluster_id:
+        print("mcp-probe: CRDB_MCP_URL / CRDB_MCP_CLUSTER_ID are not set.")
+        print("  Set them from the Cloud Console 'Connect via MCP' dialog, then re-run.")
         return
+
+    auth = "service-account token" if settings.crdb_mcp_api_key else "OAuth (browser consent on first run)"
+    print(f"mcp-probe: connecting to {settings.crdb_mcp_url} (cluster {settings.crdb_mcp_cluster_id}) via {auth}…")
 
     async def _probe() -> None:
         async with cockroach_mcp.connect() as session:
             tools = await cockroach_mcp.list_tools(session)
-            print(f"Connected to {settings.crdb_mcp_url}. {len(tools)} tool(s):")
+            print(f"Connected. {len(tools)} tool(s):")
             for tool in tools:
                 print(f"  - {tool.name}: {tool.description}")
 

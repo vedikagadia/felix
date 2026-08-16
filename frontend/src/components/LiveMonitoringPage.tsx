@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from "react";
-import type { MetricSample } from "../api/types";
-import { fetchRecentMetrics, subscribeToMetrics } from "../api/metrics";
+import type { MetricConfig, MetricSample } from "../api/types";
+import { fetchMetricConfig, fetchRecentMetrics, subscribeToMetrics } from "../api/metrics";
 
 /**
  * Live monitoring — observe instrumented services in real time off a
@@ -15,14 +15,40 @@ import { fetchRecentMetrics, subscribeToMetrics } from "../api/metrics";
 
 const MAX_POINTS = 120; // rolling window kept per series
 
-/** Is this a latency-style metric we can flag against a threshold? */
+/** Is this a latency-style metric we auto-assign the default alert level to? */
 function isLatencyMetric(metric: string): boolean {
   return metric.endsWith("_ms") || metric.toLowerCase().includes("latency");
 }
-const LATENCY_P99_THRESHOLD_MS = 1000; // mirrors MetricWatcher.P99_THRESHOLD_MS
 
 function seriesKey(s: MetricSample): string {
   return `${s.service}::${s.metric}`;
+}
+
+/** The default alert level for a metric: its own configured threshold, else the
+ * global default for a latency metric, else none (an operator can still set one). */
+function defaultThresholdFor(metric: string, config: MetricConfig): number | undefined {
+  if (config.thresholds[metric] != null) return config.thresholds[metric];
+  if (isLatencyMetric(metric)) return config.default_p99_ms;
+  return undefined;
+}
+
+/** Persisted per-card alert-level override (keyed by service::metric). */
+const OVERRIDE_PREFIX = "felix:alert:";
+function readOverride(key: string): number | null {
+  try {
+    const raw = localStorage.getItem(OVERRIDE_PREFIX + key);
+    return raw != null && raw !== "" ? Number(raw) : null;
+  } catch {
+    return null;
+  }
+}
+function writeOverride(key: string, value: number | null): void {
+  try {
+    if (value == null) localStorage.removeItem(OVERRIDE_PREFIX + key);
+    else localStorage.setItem(OVERRIDE_PREFIX + key, String(value));
+  } catch {
+    // ignore storage failures (private mode, quota) — override just won't persist
+  }
 }
 
 function p99(values: number[]): number {
@@ -40,9 +66,26 @@ function fmt(metric: string, v: number): string {
   return v.toFixed(v >= 100 ? 0 : 1);
 }
 
-export function LiveMonitoringPage() {
+/** Synthesize the alert text an "Ask felix" click pre-fills into Triage, built
+ * from the card's live numbers — the avg-hides-the-tail shape stated in words. */
+function tripAlertText(
+  service: string,
+  metric: string,
+  p99v: number,
+  meanv: number,
+  threshold: number,
+): string {
+  return (
+    `${service} — ${metric} tail latency is high: p99 is ${fmt(metric, p99v)} ` +
+    `(past the ${fmt(metric, threshold)} alert level) while the average holds at ` +
+    `${fmt(metric, meanv)}. A dashboard on avg looks green. What's causing the spike?`
+  );
+}
+
+export function LiveMonitoringPage({ onAskFelix }: { onAskFelix?: (alert: string) => void }) {
   // series[key] = chronological samples for that (service, metric).
   const [series, setSeries] = useState<Record<string, MetricSample[]>>({});
+  const [config, setConfig] = useState<MetricConfig>({ default_p99_ms: 1000, thresholds: {} });
   const [live, setLive] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
@@ -64,6 +107,10 @@ export function LiveMonitoringPage() {
   useEffect(() => {
     let unsub = () => {};
     let cancelled = false;
+    // Load the alert-level defaults (non-fatal) alongside the sample backfill.
+    fetchMetricConfig().then((c) => {
+      if (!cancelled) setConfig(c);
+    });
     fetchRecentMetrics(MAX_POINTS)
       .then((samples) => {
         if (cancelled) return;
@@ -116,21 +163,44 @@ export function LiveMonitoringPage() {
 
       <div className="live__grid">
         {keys.map((key) => (
-          <MetricCard key={key} samples={series[key]} />
+          <MetricCard
+            key={key}
+            samples={series[key]}
+            defaultThreshold={defaultThresholdFor(series[key][0].metric, config)}
+            onAskFelix={onAskFelix}
+          />
         ))}
       </div>
     </div>
   );
 }
 
-function MetricCard({ samples }: { samples: MetricSample[] }) {
+function MetricCard({
+  samples,
+  defaultThreshold,
+  onAskFelix,
+}: {
+  samples: MetricSample[];
+  defaultThreshold: number | undefined;
+  onAskFelix?: (alert: string) => void;
+}) {
+  const key = seriesKey(samples[0]);
+  // Per-card override of the alert level; null = use the configured default.
+  const [override, setOverride] = useState<number | null>(() => readOverride(key));
+  function commit(value: number | null) {
+    setOverride(value);
+    writeOverride(key, value);
+  }
+
   const latest = samples[samples.length - 1];
   const values = samples.map((s) => s.value);
   const p99v = p99(values);
   const meanv = mean(values);
-  const isLatency = isLatencyMetric(latest.metric);
-  const tripped = isLatency && p99v >= LATENCY_P99_THRESHOLD_MS;
-  const meanGreen = isLatency && meanv <= 300;
+
+  // Effective alert level: the operator's override wins, else the config default.
+  const threshold = override ?? defaultThreshold;
+  const tripped = threshold != null && p99v >= threshold;
+  const meanGreen = meanv <= 300;
 
   return (
     <article className={`metriccard ${tripped ? "is-tripped" : ""}`}>
@@ -140,9 +210,25 @@ function MetricCard({ samples }: { samples: MetricSample[] }) {
           <span className="metriccard__service">{latest.service}</span>
         </div>
         {tripped ? (
-          <span className="badge badge--alarm" title={`p99 ${p99v.toFixed(0)}ms ≥ ${LATENCY_P99_THRESHOLD_MS}ms`}>
-            ⚠ tail latency high
-          </span>
+          <div className="metriccard__alarm">
+            <span className="badge badge--alarm" title={`p99 ${p99v.toFixed(0)}ms ≥ ${threshold}ms`}>
+              ⚠ tail latency high
+            </span>
+            {onAskFelix && (
+              <button
+                type="button"
+                className="metriccard__ask"
+                onClick={() =>
+                  onAskFelix(
+                    tripAlertText(latest.service, latest.metric, p99v, meanv, threshold as number),
+                  )
+                }
+                title="Triage this spike in felix — pre-fills the alert from these live numbers"
+              >
+                Ask felix →
+              </button>
+            )}
+          </div>
         ) : (
           <span className="badge badge--ok">healthy</span>
         )}
@@ -153,7 +239,7 @@ function MetricCard({ samples }: { samples: MetricSample[] }) {
         <span className="metriccard__valuelabel">latest</span>
       </div>
 
-      <Sparkline values={values} threshold={isLatency ? LATENCY_P99_THRESHOLD_MS : undefined} tripped={tripped} />
+      <Sparkline values={values} threshold={threshold} tripped={tripped} />
 
       <div className="metriccard__stats">
         <span className={tripped ? "stat stat--bad" : "stat"}>
@@ -167,10 +253,31 @@ function MetricCard({ samples }: { samples: MetricSample[] }) {
         </span>
       </div>
 
+      <div className="metriccard__alert">
+        <label className="metriccard__alertlabel">
+          Alert when p99 ≥
+          <input
+            className="metriccard__alertinput"
+            type="number"
+            min={0}
+            step={50}
+            value={threshold ?? ""}
+            placeholder="off"
+            onChange={(e) => commit(e.target.value === "" ? null : Number(e.target.value))}
+          />
+          ms
+        </label>
+        {override != null && (
+          <button type="button" className="metriccard__alertreset" onClick={() => commit(null)}>
+            reset{defaultThreshold != null ? ` to ${defaultThreshold}` : ""}
+          </button>
+        )}
+      </div>
+
       {tripped && meanGreen && (
         <p className="metriccard__note">
-          p99 is past {LATENCY_P99_THRESHOLD_MS}ms while the average stays green ({meanv.toFixed(0)}ms) — the
-          avg-hides-the-tail signature. A dashboard on <em>avg</em> would show nothing.
+          p99 is past your {threshold}ms alert level while the average stays green ({meanv.toFixed(0)}ms) —
+          the avg-hides-the-tail signature. A dashboard on <em>avg</em> would show nothing.
         </p>
       )}
     </article>

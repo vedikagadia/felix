@@ -16,6 +16,7 @@ import { ChatThread } from "./components/ChatThread";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { IncidentsPage } from "./components/IncidentsPage";
 import { LiveMonitoringPage } from "./components/LiveMonitoringPage";
+import { DbOverviewPage } from "./components/DbOverviewPage";
 
 export interface Turn {
   id: number;
@@ -82,7 +83,7 @@ export function App() {
   const [activeCitation, setActiveCitation] = useState<string | null>(null);
   // Which page is showing: the triage chat, the incident library, or the live
   // monitoring panel.
-  const [view, setView] = useState<"chat" | "incidents" | "live">("chat");
+  const [view, setView] = useState<"chat" | "incidents" | "live" | "db">("chat");
   // Text to drop into the composer from the library's "Ask AI". `nonce` bumps
   // on every click so re-asking the same incident re-fills the box.
   const [prefill, setPrefill] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
@@ -99,6 +100,15 @@ export function App() {
   function askAI(incident: Incident) {
     setSessionId(null);
     setPrefill((p) => ({ text: incident.symptoms, nonce: p.nonce + 1 }));
+    setView("chat");
+  }
+
+  // "Ask felix" from a tripped live-monitoring card: same jump-to-Triage flow,
+  // but pre-filled with a synthesized alert built from the live p99/avg numbers
+  // so the operator can triage the spike without retyping it.
+  function askFelixAbout(alert: string) {
+    setSessionId(null);
+    setPrefill((p) => ({ text: alert, nonce: p.nonce + 1 }));
     setView("chat");
   }
 
@@ -206,6 +216,13 @@ export function App() {
           >
             Live monitoring
           </button>
+          <button
+            type="button"
+            className={`app__navlink ${view === "db" ? "is-active" : ""}`}
+            onClick={() => setView("db")}
+          >
+            DB overview
+          </button>
         </nav>
         {usingMock && (
           <span className="badge badge--mock" title="Set VITE_API_URL to use a real backend">
@@ -220,7 +237,11 @@ export function App() {
         </main>
       ) : view === "live" ? (
         <main className="app__body app__body--single">
-          <LiveMonitoringPage />
+          <LiveMonitoringPage onAskFelix={askFelixAbout} />
+        </main>
+      ) : view === "db" ? (
+        <main className="app__body app__body--single">
+          <DbOverviewPage />
         </main>
       ) : (
         <>

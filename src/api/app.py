@@ -180,6 +180,20 @@ def create_app() -> FastAPI:
         rows = ActiveIncidentRepository(conn).list_alerts(source="cdc", status="open")
         return {"alerts": [alert_to_dict(r) for r in rows]}
 
+    @app.get("/metrics/config")
+    def metrics_config() -> dict:
+        """Default alert levels for the live-monitoring panel — the p99
+        threshold each metric trips at. `default_p99_ms` applies to any latency
+        metric without a specific entry; `thresholds` maps metric name -> its
+        own p99 (from METRIC_ALERT_THRESHOLDS). The panel seeds each card's
+        alert level from this; the operator can still override it live. No DB,
+        no LLM."""
+        settings = get_settings()
+        return {
+            "default_p99_ms": settings.metric_alert_default_p99_ms,
+            "thresholds": settings.metric_alert_thresholds,
+        }
+
     @app.get("/metrics/recent")
     def metrics_recent(
         limit: int = 200,
@@ -242,6 +256,37 @@ def create_app() -> FastAPI:
             media_type="text/event-stream",
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    @app.get("/db/overview")
+    def db_overview() -> dict:
+        """A read-only snapshot of the CockroachDB cluster, gathered through the
+        **CockroachDB Cloud Managed MCP Server** — felix acting as its own MCP
+        client (`clients/cockroach_mcp`). Invokes only the read-only introspection
+        tools (get_cluster / list_databases / list_tables / show_running_queries).
+
+        Degrades gracefully: if the MCP endpoint isn't configured or the
+        connection/auth fails, returns 200 with `{"connected": false, "reason":
+        ...}` so the panel can render a friendly state instead of erroring. On
+        success returns `{"connected": true, "source", "cluster", "databases",
+        "tables_by_db", "running_queries", "tools_used"}`. No DB-URL connection,
+        no LLM — this path talks to the cluster purely over MCP."""
+        from ..clients import cockroach_mcp
+
+        settings = get_settings()
+        if not settings.crdb_mcp_url or not settings.crdb_mcp_cluster_id:
+            return {
+                "connected": False,
+                "reason": "CockroachDB MCP not configured (set CRDB_MCP_URL + CRDB_MCP_CLUSTER_ID).",
+            }
+        try:
+            overview = cockroach_mcp.fetch_overview()
+        except Exception as e:  # noqa: BLE001 - surface as a soft state, not a 500
+            return {
+                "connected": False,
+                "reason": f"Could not reach the MCP server: {e}. "
+                "Authenticate once with `python -m src mcp-probe`.",
+            }
+        return {"connected": True, "source": "cockroachdb-cloud-mcp", **overview}
 
     @app.get("/sessions/{session_id}")
     def get_session(session_id: str, conn=Depends(db_conn)) -> dict:

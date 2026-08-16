@@ -14,9 +14,23 @@
  */
 
 import { usingMock } from "./client";
-import type { MetricSample } from "./types";
+import type { MetricConfig, MetricSample } from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL as string | undefined;
+
+/** Default alert levels (per-metric p99 thresholds) the panel seeds cards from. */
+export async function fetchMetricConfig(): Promise<MetricConfig> {
+  if (usingMock) return { default_p99_ms: 1000, thresholds: {} };
+
+  try {
+    const res = await fetch(`${API_URL}/metrics/config`);
+    if (!res.ok) return { default_p99_ms: 1000, thresholds: {} };
+    return (await res.json()) as MetricConfig;
+  } catch {
+    // Non-fatal: fall back to a sane default so the panel still renders.
+    return { default_p99_ms: 1000, thresholds: {} };
+  }
+}
 
 /** Cold-start history for the panel's sparklines (oldest-first). */
 export async function fetchRecentMetrics(limit = 120): Promise<MetricSample[]> {

@@ -41,9 +41,6 @@ from src.store.repositories import MetricRepository
 
 log = logging.getLogger("sample.run")
 
-SERVICE = "checkout-service"
-LATENCY_METRIC = "checkout_latency_ms"
-
 
 def run(interval: float) -> None:
     conn = get_conn()
@@ -51,14 +48,25 @@ def run(interval: float) -> None:
     probe = Probe.for_repo(metrics)
 
     handler = CheckoutHandler()
-    # "Attach the wrapper to the checkout service": wrap the real entry point so
-    # every call records its measured latency into `metrics`. The same
-    # probe.timed(...) wraps any callable — that's the reusable-wrapper story.
-    process = probe.timed(SERVICE, LATENCY_METRIC)(handler.process)
+    # "Attach the wrapper to N services": the same probe.timed(...) wraps ANY
+    # callable, so each layer of the checkout reports its own (service, metric)
+    # and shows up as its own live-monitoring card. We wrap the two inner
+    # dependencies IN PLACE so the top-level process() call drives them through
+    # the wrapped versions — nested, genuinely-measured timing:
+    #   payment-gateway.payment_latency_ms  — includes the retry/backoff spike
+    #   fulfillment.enqueue_latency_ms       — fast; a healthy-service card
+    #   checkout-service.checkout_latency_ms — the whole request (sum of both)
+    handler.payments.charge = probe.timed("payment-gateway", "payment_latency_ms")(
+        handler.payments.charge
+    )
+    handler.queue.enqueue = probe.timed("fulfillment", "enqueue_latency_ms")(
+        handler.queue.enqueue
+    )
+    process = probe.timed("checkout-service", "checkout_latency_ms")(handler.process)
 
     log.info(
-        "driving %s every %.2fs (pool_size=%s, gateway degrades every %s charges)",
-        SERVICE,
+        "driving checkout-service (+ payment-gateway, fulfillment) every %.2fs "
+        "(pool_size=%s, gateway degrades every %s charges)",
         interval,
         config.DB_POOL_SIZE,
         payment_gateway.GATEWAY_SLOW_EVERY,
