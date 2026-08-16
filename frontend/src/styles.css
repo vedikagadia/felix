@@ -1230,3 +1230,202 @@ body {
     margin-left: 12px;
   }
 }
+
+/* ── Live monitoring panel ─────────────────────────────────────────────────── */
+.live {
+  max-width: 1100px;
+  margin: 0 auto;
+  padding: 24px 20px 48px;
+  width: 100%;
+}
+.live__head h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 6px;
+}
+.live__dot {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.live__dot.is-live {
+  background: var(--graph);
+  box-shadow: 0 0 0 0 rgba(87, 171, 90, 0.6);
+  animation: live-pulse 1.8s infinite;
+}
+.live__dot.is-down {
+  background: var(--text-faint);
+}
+.live__dotlabel {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--text-dim);
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+@keyframes live-pulse {
+  0% { box-shadow: 0 0 0 0 rgba(87, 171, 90, 0.5); }
+  70% { box-shadow: 0 0 0 7px rgba(87, 171, 90, 0); }
+  100% { box-shadow: 0 0 0 0 rgba(87, 171, 90, 0); }
+}
+.live__sub {
+  color: var(--text-dim);
+  font-size: 14px;
+  margin: 0 0 20px;
+  max-width: 720px;
+  line-height: 1.5;
+}
+.live__sub code,
+.live__empty code {
+  font-family: var(--mono);
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  padding: 1px 5px;
+  font-size: 0.9em;
+  color: var(--accent);
+}
+.live__status,
+.live__empty {
+  color: var(--text-dim);
+  font-size: 14px;
+  padding: 12px 0;
+}
+.live__error {
+  margin-bottom: 16px;
+}
+.live__grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(340px, 1fr));
+  gap: 16px;
+}
+
+.metriccard {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 16px;
+  transition: border-color 0.2s;
+}
+.metriccard.is-tripped {
+  border-color: var(--inc);
+}
+.metriccard__head {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 8px;
+  margin-bottom: 8px;
+}
+.metriccard__metric {
+  display: block;
+  font-family: var(--mono);
+  font-size: 14px;
+  font-weight: 600;
+  color: var(--text);
+}
+.metriccard__service {
+  display: block;
+  font-size: 12px;
+  color: var(--text-faint);
+  margin-top: 2px;
+}
+.metriccard__value {
+  font-size: 30px;
+  font-weight: 700;
+  letter-spacing: -0.02em;
+  color: var(--text);
+  margin: 4px 0 12px;
+}
+.metriccard.is-tripped .metriccard__value {
+  color: var(--inc);
+}
+.metriccard__valuelabel {
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-left: 8px;
+}
+.metriccard__stats {
+  display: flex;
+  gap: 16px;
+  margin-top: 10px;
+  flex-wrap: wrap;
+}
+.stat {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.stat strong {
+  color: var(--text-faint);
+  font-weight: 500;
+  text-transform: uppercase;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  margin-right: 5px;
+}
+.stat--bad {
+  color: var(--inc);
+}
+.stat--muted {
+  color: var(--text-faint);
+}
+.metriccard__note {
+  margin: 12px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-dim);
+  border-top: 1px dashed var(--border);
+  padding-top: 10px;
+}
+
+.badge--ok {
+  color: var(--graph);
+  border-color: rgba(87, 171, 90, 0.4);
+}
+.badge--alarm {
+  color: var(--inc);
+  border-color: rgba(229, 83, 75, 0.5);
+  background: rgba(229, 83, 75, 0.08);
+}
+
+.sparkline {
+  width: 100%;
+  height: 64px;
+  display: block;
+}
+.sparkline--empty {
+  height: 64px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+.sparkline__line {
+  fill: none;
+  stroke: var(--graph);
+  stroke-width: 1.5;
+  vector-effect: non-scaling-stroke;
+}
+.sparkline__line.is-tripped {
+  stroke: var(--inc);
+}
+.sparkline__area {
+  fill: rgba(87, 171, 90, 0.12);
+  stroke: none;
+}
+.sparkline__area.is-tripped {
+  fill: rgba(229, 83, 75, 0.12);
+}
+.sparkline__threshold {
+  stroke: var(--cite);
+  stroke-width: 1;
+  stroke-dasharray: 4 3;
+  vector-effect: non-scaling-stroke;
+  opacity: 0.6;
+}

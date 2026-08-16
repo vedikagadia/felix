@@ -26,6 +26,44 @@ class MetricRepository(BaseRepository):
                 (service, metric, value, json.dumps(labels) if labels is not None else None),
             )
 
+    def recent_samples(
+        self,
+        limit: int = 200,
+        service: str | None = None,
+        metric: str | None = None,
+    ) -> list[dict]:
+        """Recent metric rows (newest-first), optionally filtered by service
+        and/or metric. Powers the live-monitoring panel's cold-start backfill:
+        the panel seeds each series' sparkline from these before subscribing to
+        the changefeed for steady-state samples. Returns dicts (service, metric,
+        value, ts, labels) — `ts` a psycopg datetime the API layer ISO-8601s."""
+        clauses: list[str] = []
+        params: list = []
+        if service:
+            clauses.append("service = %s")
+            params.append(service)
+        if metric:
+            clauses.append("metric = %s")
+            params.append(metric)
+        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        params.append(limit)
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT service, metric, value, ts, labels
+                FROM metrics
+                {where}
+                ORDER BY ts DESC
+                LIMIT %s
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+        return [
+            {"service": r[0], "metric": r[1], "value": float(r[2]), "ts": r[3], "labels": r[4]}
+            for r in rows
+        ]
+
     def recent(self, service: str, metric: str, limit: int = 200) -> list[float]:
         """Most-recent `limit` values for (service, metric), NEWEST-FIRST.
 

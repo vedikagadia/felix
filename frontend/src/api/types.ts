@@ -206,6 +206,22 @@ export interface AlertPayload {
   status: string;
 }
 
+/**
+ * One live telemetry sample, as served by `GET /metrics/recent` (backfill) and
+ * streamed over `GET /metrics/stream` (Server-Sent Events, the CDC path). A
+ * timing probe on an instrumented service writes one row per measured call;
+ * both delivery paths serialize to this identical shape. `value` is the metric
+ * value (ms for a `*_latency_ms` metric); `labels` is arbitrary JSON (e.g.
+ * `{"ok": false}` when the measured call raised).
+ */
+export interface MetricSample {
+  service: string;
+  metric: string;
+  value: number;
+  ts: string; // ISO 8601
+  labels?: Record<string, unknown> | null;
+}
+
 /** One pre-seeded turn of a CDC session's transcript (`GET /sessions/{id}`). */
 export interface SessionTurn {
   turn_order: number;

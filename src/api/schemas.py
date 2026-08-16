@@ -131,6 +131,24 @@ def message_to_dict(m: Message) -> dict[str, Any]:
     }
 
 
+def metric_sample_to_dict(row: dict[str, Any]) -> dict[str, Any]:
+    """One live metric sample -> the MetricSample shape the panel expects.
+
+    Accepts both a `MetricRepository.recent_samples` row (a datetime `ts`) and a
+    decoded changefeed `after` payload (a string `ts`), coercing either to an
+    ISO-8601 string so the two delivery paths (backfill + stream) look identical
+    to the frontend."""
+    ts = row.get("ts")
+    value = row.get("value")
+    return {
+        "service": row.get("service"),
+        "metric": row.get("metric"),
+        "value": float(value) if value is not None else None,
+        "ts": _iso(ts) if isinstance(ts, datetime) else ts,
+        "labels": row.get("labels"),
+    }
+
+
 def alert_to_dict(row: dict[str, Any]) -> dict[str, Any]:
     """One `list_alerts` row -> the frozen AlertPayload (CDC_INTERFACE §7.3).
 

@@ -26,10 +26,16 @@ from ..store.connection import get_conn
 from .schemas import (
     alert_to_dict,
     incident_to_dict,
+    metric_sample_to_dict,
     packet_to_dict,
     result_to_dict,
     session_to_dict,
 )
+
+# Sinkless CHANGEFEED for the live-monitoring stream — new samples only
+# (`no_initial_scan`); the panel seeds history from GET /metrics/recent. Same
+# feed the watcher uses, but this consumer only relays rows to the browser.
+_METRICS_CHANGEFEED_SQL = "EXPERIMENTAL CHANGEFEED FOR metrics WITH updated, no_initial_scan"
 
 
 def _sse(event: str, data: dict) -> str:
@@ -173,6 +179,69 @@ def create_app() -> FastAPI:
 
         rows = ActiveIncidentRepository(conn).list_alerts(source="cdc", status="open")
         return {"alerts": [alert_to_dict(r) for r in rows]}
+
+    @app.get("/metrics/recent")
+    def metrics_recent(
+        limit: int = 200,
+        service: str | None = None,
+        metric: str | None = None,
+        conn=Depends(db_conn),
+    ) -> dict:
+        """Recent metric samples for the live-monitoring panel's cold start —
+        oldest-first so the frontend can seed each sparkline directly. Optional
+        `service`/`metric` filters. Pure read; no LLM. Returns
+        {"samples": [MetricSample, ...]}."""
+        from ..store.repositories import MetricRepository
+
+        rows = MetricRepository(conn).recent_samples(limit=limit, service=service, metric=metric)
+        # recent_samples is newest-first; reverse to chronological for plotting.
+        samples = [metric_sample_to_dict(r) for r in reversed(rows)]
+        return {"samples": samples}
+
+    @app.get("/metrics/stream")
+    def metrics_stream(service: str | None = None, metric: str | None = None) -> StreamingResponse:
+        """Live metric feed over Server-Sent Events — the CDC showcase for the
+        live-monitoring panel. Holds a sinkless CHANGEFEED on `metrics` and emits
+        one `sample` frame per new row (optionally filtered by service/metric):
+
+          sample — {service, metric, value, ts, labels} for each inserted row
+          error  — {"error": "..."} if the feed raises
+
+        Uses its OWN connection (opened here, closed when the client disconnects
+        and the generator is torn down): a changefeed holds a server-side
+        streaming portal and can't share a connection, so this must not use the
+        request-scoped `db_conn` dependency."""
+
+        def event_stream():
+            from ..store.connection import get_conn
+
+            conn = get_conn()
+            try:
+                # Idempotent; rangefeeds must be enabled for a changefeed (on
+                # locally already). Safe to run before the stream portal opens.
+                with conn.cursor() as cur:
+                    cur.execute("SET CLUSTER SETTING kv.rangefeed.enabled = true")
+                with conn.cursor() as cur:
+                    for row in cur.stream(_METRICS_CHANGEFEED_SQL):
+                        payload = json.loads(row[2].decode())
+                        after = payload.get("after")
+                        if after is None:  # a delete — we only INSERT metrics
+                            continue
+                        if service and after.get("service") != service:
+                            continue
+                        if metric and after.get("metric") != metric:
+                            continue
+                        yield _sse("sample", metric_sample_to_dict(after))
+            except Exception as e:  # noqa: BLE001 - report to the client, don't 500 mid-stream
+                yield _sse("error", {"error": str(e)})
+            finally:
+                conn.close()
+
+        return StreamingResponse(
+            event_stream(),
+            media_type="text/event-stream",
+            headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
+        )
 
     @app.get("/sessions/{session_id}")
     def get_session(session_id: str, conn=Depends(db_conn)) -> dict:

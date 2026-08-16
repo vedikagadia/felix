@@ -52,7 +52,10 @@ sql/
   schema.sql          # the 9 tables; VECTOR(1024) + vector indexes
   seed_dump.sql       # portable data-only dump (154 rows incl. embeddings), re-loadable
 sample_project/
-  checkout_service/   # the demo target service (Python; no real logic, just a realistic call graph + logs)
+  checkout_service/   # the demo target service (Python; a realistic call graph + logs). payment_gateway.py
+                      #   has a demo-only simulated round-trip so a real charge() genuinely takes time
+  run.py              # traffic driver: CALLS CheckoutHandler.process in a loop with the timing probe
+                      #   attached, so every checkout_latency_ms sample is measured, not fabricated
   seed/               # the authored memory corpora (fiction): incidents.json, docs.json, code_changes.json
   WORLD.md            # AUTHORITATIVE ground truth — every seed conforms to the names/logs/facts here
 src/                  # layered: cli/api -> service -> clients/store -> models/config
@@ -62,13 +65,15 @@ src/                  # layered: cli/api -> service -> clients/store -> models/c
   clients/
     embedder/         # Embedder ABC + get_embedder(); titan.py (Bedrock), local.py (bge-large-en-v1.5). Both 1024-dim
     cockroach_mcp.py  # thin client for the CockroachDB Managed MCP Server (recall path; later spike)
+  monitoring/         # Probe — reusable timing wrapper (@probe.timed / with probe.measure) that records
+                      #   measured wall-clock latency into `metrics`; attach to any service (checkout is first)
   store/
     connection.py     # get_conn, apply_schema, vec_literal (VECTOR param helper)
     repositories/     # one per source: incidents, docs, changes, graph (blast_radius/upstream_callers), actions, active (working memory). Return domain models
   service/
     evidence_gatherer.py # EvidenceGatherer(conn, embedder) -> EvidencePacket (retrieval half of the loop)
     diagnoser.py      # IncidentDiagnoser: respond(session_id?) -> DiagnosisResult (reason + write-back, multi-turn aware); respond_stream() = SSE generator twin; diagnose() returns just the Diagnosis
-  api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /chat/stream [SSE], /recall, /incidents, /incidents/search, /incidents/{id}/feedback, /health), schemas.py (serialize to the frontend contract)
+  api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /chat/stream [SSE], /recall, /incidents, /incidents/search, /incidents/{id}/feedback, /metrics/recent, /metrics/stream [SSE, CDC-backed], /alerts, /sessions/{id}, /health), schemas.py (serialize to the frontend contract)
   seed/
     parser.py         # AST -> code graph (42 nodes / 22 edges), deterministic uuid5 ids
     loader.py         # Seeder: parse + embed + insert -> the integration seam
@@ -288,3 +293,36 @@ The frontend renders 👍/👎 on each `DiagnosisCard` (keyed on
 `diagnosis.incident_id`); mock mode no-ops the call. Seed incidents already carry
 embeddings and a NULL feedback, so they stay recallable exactly as before — the
 gate only applies to live-diagnosed rows.
+
+## Live monitoring (CDC — observe services in real time)
+
+A **reusable timing wrapper** + a **live panel** that watches instrumented
+services off a CockroachDB changefeed. Distinct from the `watcher.py` anomaly
+path (which trips → auto-triages): this is the *observe-it-live* view.
+
+- **The probe** (`src/monitoring/probe.py`): `Probe.for_repo(MetricRepository)`
+  gives `@probe.timed(service, metric)` (decorator) and `with probe.measure(...)`
+  (context-manager) — measures wall-clock latency (ms) and writes one `metrics`
+  row per call, labelled `{"ok": bool}`. Generic: attach to any callable/service.
+- **The sample service** is genuinely instrumented: `sample_project/run.py` now
+  *calls* `CheckoutHandler.process` in a loop with the probe attached (no more
+  fabricated numbers). `payment_gateway.py` sleeps a simulated round-trip and
+  degrades every `GATEWAY_SLOW_EVERY`-th charge into exactly one real
+  retry/backoff — a bounded ~1s tail spike over a ~100ms/mean<300ms baseline
+  (the avg-hides-the-tail shape). Verified: p99≈1.2s, mean≈180ms.
+- **The stream**: `GET /metrics/stream` holds a sinkless
+  `EXPERIMENTAL CHANGEFEED FOR metrics` and relays each new row as an SSE
+  `sample` frame (its OWN connection — a changefeed portal can't be shared).
+  `GET /metrics/recent` backfills history. Note: `/metrics/stream` opens a
+  connection per subscriber for the demo's scale.
+- **The panel** (`frontend/src/components/LiveMonitoringPage.tsx`, "Live
+  monitoring" nav tab): seeds sparklines from `/metrics/recent`, tails
+  `/metrics/stream` via native `EventSource` (a plain GET SSE — no hand-rolled
+  parser, unlike `/chat/stream`), and renders one card per `(service, metric)`
+  **automatically** — a live value, sparkline w/ threshold line, rolling p99/avg,
+  and a **⚠ tail latency high** badge when p99 ≥ 1000ms. The stream seam lives in
+  `frontend/src/api/metrics.ts` (mock mode synthesizes the same shape).
+- **Caveat**: the sample fulfillment queue never drains (no worker), so a
+  *very* long `run.py` session eventually hits `QueueFull` at `QUEUE_MAX_DEPTH`
+  (5000) — the driver catches it, logs, and still emits the latency sample. Fine
+  for demo-length runs (minutes).

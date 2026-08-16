@@ -15,6 +15,7 @@ import { AlertComposer } from "./components/AlertComposer";
 import { ChatThread } from "./components/ChatThread";
 import { EvidencePanel } from "./components/EvidencePanel";
 import { IncidentsPage } from "./components/IncidentsPage";
+import { LiveMonitoringPage } from "./components/LiveMonitoringPage";
 
 export interface Turn {
   id: number;
@@ -79,8 +80,9 @@ export function App() {
   // hovering a diagnosis citation chip or an evidence card sets it, so the two
   // panes highlight each other. null = nothing focused.
   const [activeCitation, setActiveCitation] = useState<string | null>(null);
-  // Which page is showing: the live triage chat, or the incident library.
-  const [view, setView] = useState<"chat" | "incidents">("chat");
+  // Which page is showing: the triage chat, the incident library, or the live
+  // monitoring panel.
+  const [view, setView] = useState<"chat" | "incidents" | "live">("chat");
   // Text to drop into the composer from the library's "Ask AI". `nonce` bumps
   // on every click so re-asking the same incident re-fills the box.
   const [prefill, setPrefill] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
@@ -197,6 +199,13 @@ export function App() {
           >
             Incident library
           </button>
+          <button
+            type="button"
+            className={`app__navlink ${view === "live" ? "is-active" : ""}`}
+            onClick={() => setView("live")}
+          >
+            Live monitoring
+          </button>
         </nav>
         {usingMock && (
           <span className="badge badge--mock" title="Set VITE_API_URL to use a real backend">
@@ -208,6 +217,10 @@ export function App() {
       {view === "incidents" ? (
         <main className="app__body app__body--single">
           <IncidentsPage onAskAI={askAI} />
+        </main>
+      ) : view === "live" ? (
+        <main className="app__body app__body--single">
+          <LiveMonitoringPage />
         </main>
       ) : (
         <>
