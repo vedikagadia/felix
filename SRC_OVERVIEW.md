@@ -63,7 +63,13 @@ repository layer. Key ones:
   table(s) and maps rows↔models:
   - `incidents.py` — `insert`, `insert_minimal` (no embedding → invisible to
     recall; used for live write-back), `add_resolution_steps`, and `recall`
-    (vector k-NN via `embedding <-> %s::VECTOR(1024)`).
+    (vector k-NN via `embedding <-> %s::VECTOR(1024)`). Plus two library-page
+    reads: `list_all` (browse, `ORDER BY occurred_at DESC`) and `search` (the
+    same vector k-NN as `recall`, exposed as its own endpoint); both batch-load
+    resolution steps to avoid an N+1. And `record_feedback` — the learning loop:
+    `helpful=True` sets `embedding` + `feedback='helpful'` (promotes a
+    live-diagnosed row from invisible into recallable memory), `False` clears the
+    embedding + marks `'not_helpful'`.
   - `docs.py`, `changes.py` — same recall pattern; **`changes.recall` adds a time
     filter** (`merged_at > now() - N days`) — semantic *and* temporal.
   - `graph.py` — the graph engine. `WITH RECURSIVE` traversal over `code_edges`,
@@ -141,8 +147,17 @@ A thin adapter over the service layer, parallel to the CLI — no business logic
   recall finishes, `delta` frames as the model generates, then a `done` frame
   carrying the same envelope after parse + write-back; an `error` frame on
   failure), `POST /recall` →
-  `{evidence}` (retrieval only, the `--no-llm` equivalent), `GET /health`. Both
-  `/chat` and `/chat/stream` return 503 if the LLM isn't configured.
+  `{evidence}` (retrieval only, the `--no-llm` equivalent), `GET /incidents` →
+  `{incidents: [{item, distance:null}]}` (browse the episodic library,
+  newest-first) and `GET /incidents/search?q=&k=` →
+  `{query, incidents: [{item, distance}]}` (embeds `q` and ranks by CockroachDB
+  vector distance — the incident-library page's vector-search showcase; needs
+  the embedder but not the LLM), `POST /incidents/{id}/feedback` `{helpful}` →
+  `{incident_id, feedback, recallable}` (the learning loop — 👍 embeds the
+  incident so it becomes recallable, 👎 clears it; embeds via
+  `IncidentRepository.record_feedback` in one transaction with an
+  `agent_actions` audit row; 404 on unknown id), `GET /health`. Both `/chat` and
+  `/chat/stream` return 503 if the LLM isn't configured.
 - **`schemas.py`**: serializes domain models to the JSON contract in
   `frontend/src/api/types.ts` (recalls → `{item, distance}`, graph hits →
   `{node, depth}`, datetimes → ISO strings).

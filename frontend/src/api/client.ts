@@ -10,8 +10,20 @@
  * ChatResponse (src/api/types.ts). Nothing else in the app talks to the network.
  */
 
-import type { ChatRequest, ChatResponse, StreamHandlers } from "./types";
-import { mockChat, mockChatStream } from "./mock";
+import type {
+  ChatRequest,
+  ChatResponse,
+  FeedbackResponse,
+  IncidentHit,
+  StreamHandlers,
+} from "./types";
+import {
+  mockChat,
+  mockChatStream,
+  mockListIncidents,
+  mockSearchIncidents,
+  mockSubmitFeedback,
+} from "./mock";
 
 const API_URL = import.meta.env.VITE_API_URL as string | undefined;
 const FORCE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
@@ -122,6 +134,49 @@ export async function sendChatStream(req: ChatRequest, handlers: StreamHandlers)
       `Stream interrupted: ${e instanceof Error ? e.message : String(e)}`,
     );
   }
+}
+
+/** Browse the whole incident library (unranked, newest-first). */
+export async function listIncidents(limit = 200): Promise<IncidentHit[]> {
+  if (usingMock) return mockListIncidents();
+
+  const res = await fetch(`${API_URL}/incidents?limit=${limit}`);
+  if (!res.ok) {
+    throw new ApiError(`Backend returned ${res.status} ${res.statusText}`, res.status);
+  }
+  const body = (await res.json()) as { incidents: IncidentHit[] };
+  return body.incidents;
+}
+
+/** Semantic search over the incident library (CockroachDB VECTOR ranking). */
+export async function searchIncidents(q: string, k = 12): Promise<IncidentHit[]> {
+  if (usingMock) return mockSearchIncidents(q);
+
+  const res = await fetch(`${API_URL}/incidents/search?q=${encodeURIComponent(q)}&k=${k}`);
+  if (!res.ok) {
+    throw new ApiError(`Backend returned ${res.status} ${res.statusText}`, res.status);
+  }
+  const body = (await res.json()) as { incidents: IncidentHit[] };
+  return body.incidents;
+}
+
+/**
+ * Record 👍/👎 feedback on a diagnosed incident. 👍 promotes it into recallable
+ * memory (the backend embeds it); 👎 keeps it out. Keyed on the diagnosis's
+ * `incident_id`. No-ops gracefully in mock mode.
+ */
+export async function submitFeedback(incidentId: string, helpful: boolean): Promise<FeedbackResponse> {
+  if (usingMock) return mockSubmitFeedback(incidentId, helpful);
+
+  const res = await fetch(`${API_URL}/incidents/${encodeURIComponent(incidentId)}/feedback`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ helpful }),
+  });
+  if (!res.ok) {
+    throw new ApiError(`Backend returned ${res.status} ${res.statusText}`, res.status);
+  }
+  return (await res.json()) as FeedbackResponse;
 }
 
 /** Parse one SSE frame (`event:` + one or more `data:` lines) and route it. */

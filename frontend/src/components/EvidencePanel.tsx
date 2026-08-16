@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import type { Turn } from "../App";
 import type { CodeChange, DocChunk, EvidencePacket, GraphHit, Incident, Recall } from "../api/types";
+import { relevancePct } from "../lib/relevance";
 
 export function EvidencePanel({
   turn,
@@ -59,14 +60,8 @@ export function EvidencePanel({
   );
 }
 
-/** Distance → a legible "match" score. Vectors are unit-normalised, so L2
- * distance d relates to cosine similarity as sim = 1 − d²/2; clamp to [0,1]. */
-function relevance(distance: number): number {
-  return Math.max(0, Math.min(1, 1 - (distance * distance) / 2));
-}
-
 function RelevanceBar({ distance }: { distance: number }) {
-  const pct = Math.round(relevance(distance) * 100);
+  const pct = relevancePct(distance);
   return (
     <span className="relbar" title={`L2 distance ${distance.toFixed(3)} · ${pct}% match`}>
       <span className="relbar__track">

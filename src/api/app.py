@@ -25,6 +25,7 @@ from ..service.evidence_gatherer import EvidenceGatherer
 from ..store.connection import get_conn
 from .schemas import (
     alert_to_dict,
+    incident_to_dict,
     packet_to_dict,
     result_to_dict,
     session_to_dict,
@@ -48,6 +49,14 @@ class ChatRequest(BaseModel):
         default=None,
         description="Active-incident conversation id from a prior /chat response; "
         "set it to ask a follow-up in the same conversation (multi-turn).",
+    )
+
+
+class FeedbackRequest(BaseModel):
+    helpful: bool = Field(
+        ...,
+        description="True if the diagnosis was helpful (promote it into recallable "
+        "memory), False if not (keep it out of recall).",
     )
 
 
@@ -90,6 +99,70 @@ def create_app() -> FastAPI:
         gatherer = EvidenceGatherer(conn)
         packet = gatherer.gather(req.alert, origin_node=req.origin_node, k=req.k)
         return {"evidence": packet_to_dict(packet)}
+
+    @app.get("/incidents")
+    def list_incidents(limit: int = 200, conn=Depends(db_conn)) -> dict:
+        """The whole incident library, newest-first, for the browse page. Pure
+        read, no LLM. Returns {"incidents": [{item, distance}]} — `distance` is
+        null here (this view isn't vector-ranked); the shape matches
+        /incidents/search so the frontend renders one list either way."""
+        from ..store.repositories import IncidentRepository
+
+        rows = IncidentRepository(conn).list_all(limit=limit)
+        return {"incidents": [{"item": incident_to_dict(i), "distance": None} for i in rows]}
+
+    @app.get("/incidents/search")
+    def search_incidents(q: str, k: int = 10, conn=Depends(db_conn)) -> dict:
+        """Semantic search over the incident library — embeds `q` and ranks
+        incidents by CockroachDB VECTOR distance (the showcase). Returns
+        {"query", "incidents": [{item, distance}]} sorted nearest-first."""
+        from ..clients.embedder import get_embedder
+        from ..store.repositories import IncidentRepository
+
+        qv = get_embedder().embed(q)
+        hits = IncidentRepository(conn).search(qv, k=k)
+        return {
+            "query": q,
+            "incidents": [{"item": incident_to_dict(h.item), "distance": h.distance} for h in hits],
+        }
+
+    @app.post("/incidents/{incident_id}/feedback")
+    def incident_feedback(
+        incident_id: str, req: FeedbackRequest, conn=Depends(db_conn)
+    ) -> dict:
+        """Record human feedback on a live-diagnosed incident — felix's learning
+        loop. `helpful=true` embeds the incident (title + symptoms, the same text
+        the seeder embeds) so it becomes recallable by future alerts; `false`
+        clears the embedding so a wrong diagnosis is never recalled. 404 if the
+        incident id is unknown. Needs the embedder (only when helpful) but not the
+        LLM. Returns {incident_id, feedback, recallable}."""
+        from ..store.repositories import ActionRepository, IncidentRepository
+
+        repo = IncidentRepository(conn)
+        incident = repo.get(incident_id)
+        if incident is None:
+            raise HTTPException(status_code=404, detail="incident not found")
+
+        embedding = None
+        if req.helpful:
+            from ..clients.embedder import get_embedder
+
+            embedding = get_embedder().embed(f"{incident.title}\n{incident.symptoms}")
+
+        # One transaction: promote/demote the row + write the audit trail together.
+        with conn.transaction():
+            repo.record_feedback(incident_id, helpful=req.helpful, embedding=embedding)
+            ActionRepository(conn).log(
+                action_type="feedback",
+                tool_called="record_feedback",
+                input={"incident_id": incident_id, "helpful": req.helpful},
+                output={"recallable": req.helpful},
+            )
+        return {
+            "incident_id": incident_id,
+            "feedback": "helpful" if req.helpful else "not_helpful",
+            "recallable": req.helpful,
+        }
 
     @app.get("/alerts")
     def alerts(conn=Depends(db_conn)) -> dict:

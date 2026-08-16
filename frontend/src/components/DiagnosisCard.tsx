@@ -1,4 +1,6 @@
+import { useState } from "react";
 import type { Diagnosis, EvidencePacket, ProposedStep } from "../api/types";
+import { submitFeedback } from "../api/client";
 import { Citations } from "./Citations";
 
 function isStepObject(s: ProposedStep | string): s is ProposedStep {
@@ -79,6 +81,66 @@ export function DiagnosisCard({
           {active ? "Showing evidence →" : "Show evidence"}
         </button>
       </div>
+
+      {diagnosis.incident_id && <FeedbackBar incidentId={diagnosis.incident_id} />}
+    </div>
+  );
+}
+
+/**
+ * 👍/👎 on a diagnosis — felix's learning loop. 👍 promotes this incident into
+ * recallable memory (the backend embeds it), so future similar alerts recall it;
+ * 👎 keeps it out. Optimistic: locks after one vote, shows what the vote did.
+ */
+function FeedbackBar({ incidentId }: { incidentId: string }) {
+  const [state, setState] = useState<"idle" | "sending" | "helpful" | "not_helpful" | "error">(
+    "idle",
+  );
+
+  async function vote(helpful: boolean) {
+    if (state === "sending" || state === "helpful" || state === "not_helpful") return;
+    setState("sending");
+    try {
+      const res = await submitFeedback(incidentId, helpful);
+      setState(res.feedback);
+    } catch {
+      setState("error");
+    }
+  }
+
+  if (state === "helpful") {
+    return (
+      <div className="feedback feedback--done">
+        ✓ Saved to memory — felix will recall this next time a similar alert fires.
+      </div>
+    );
+  }
+  if (state === "not_helpful") {
+    return <div className="feedback feedback--done">Thanks — kept out of recall.</div>;
+  }
+
+  return (
+    <div className="feedback">
+      <span className="feedback__prompt">Was this helpful?</span>
+      <button
+        type="button"
+        className="feedback__btn"
+        disabled={state === "sending"}
+        onClick={() => vote(true)}
+        title="Store this problem + solution so felix recalls it next time"
+      >
+        👍 Helpful
+      </button>
+      <button
+        type="button"
+        className="feedback__btn"
+        disabled={state === "sending"}
+        onClick={() => vote(false)}
+        title="Don't store this — keep it out of recall"
+      >
+        👎 Not helpful
+      </button>
+      {state === "error" && <span className="feedback__error">Couldn’t save — try again.</span>}
     </div>
   );
 }

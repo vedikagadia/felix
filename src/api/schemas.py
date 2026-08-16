@@ -41,6 +41,7 @@ def incident_to_dict(inc: Incident) -> dict[str, Any]:
         "severity": inc.severity,
         "tags": inc.tags,
         "occurred_at": _iso(inc.occurred_at),
+        "feedback": inc.feedback,
         "resolution_steps": [
             {
                 "step_order": s.step_order,

@@ -134,6 +134,39 @@ def test_audit_row_is_valid_json(conn):
     assert output_col["summary"] == "s"
 
 
+def test_feedback_promotes_then_demotes_incident_in_recall(conn):
+    """The learning loop: a live-diagnosed incident starts with a NULL embedding
+    (invisible to vector search). `record_feedback(helpful=True, embedding=…)`
+    promotes it (now nearest to its own vector); `helpful=False` clears the
+    embedding so it drops back out. Uses a synthetic vector — no embedder."""
+    repo = IncidentRepository(conn)
+    # A distinctive unit vector; querying with the same vector gives distance ~0.
+    vec = [1.0] + [0.0] * 1023
+
+    iid = repo.insert_minimal(title="feedback loop test", symptoms="unique-symptom-zzz")
+
+    # Before feedback: no embedding, so search never surfaces it.
+    hits = repo.search(vec, k=50)
+    assert iid not in {h.item.id for h in hits}, "null-embedding row must be invisible to search"
+
+    # 👍 → embed + mark helpful. Now it's the nearest match to its own vector.
+    assert repo.record_feedback(iid, helpful=True, embedding=vec) is True
+    hits = repo.search(vec, k=5)
+    assert hits and hits[0].item.id == iid, "promoted incident should be the nearest match"
+    assert repo.get(iid).feedback == "helpful"
+
+    # 👎 → clear embedding + mark not_helpful. Drops back out of search.
+    assert repo.record_feedback(iid, helpful=False) is True
+    hits = repo.search(vec, k=50)
+    assert iid not in {h.item.id for h in hits}, "demoted incident must leave search again"
+    assert repo.get(iid).feedback == "not_helpful"
+
+
+def test_feedback_on_unknown_incident_returns_false(conn):
+    repo = IncidentRepository(conn)
+    assert repo.record_feedback("00000000-0000-0000-0000-000000000000", helpful=False) is False
+
+
 def test_failed_writeback_leaves_no_orphan(conn):
     """If a step insert fails mid-sequence, the whole write-back must roll back
     — no incident row without its steps/audit. We force the failure by making

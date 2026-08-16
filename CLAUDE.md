@@ -68,7 +68,7 @@ src/                  # layered: cli/api -> service -> clients/store -> models/c
   service/
     evidence_gatherer.py # EvidenceGatherer(conn, embedder) -> EvidencePacket (retrieval half of the loop)
     diagnoser.py      # IncidentDiagnoser: respond(session_id?) -> DiagnosisResult (reason + write-back, multi-turn aware); respond_stream() = SSE generator twin; diagnose() returns just the Diagnosis
-  api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /chat/stream [SSE], /recall, /health), schemas.py (serialize to the frontend contract)
+  api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /chat/stream [SSE], /recall, /incidents, /incidents/search, /incidents/{id}/feedback, /health), schemas.py (serialize to the frontend contract)
   seed/
     parser.py         # AST -> code graph (42 nodes / 22 edges), deterministic uuid5 ids
     loader.py         # Seeder: parse + embed + insert -> the integration seam
@@ -197,15 +197,26 @@ Done & verified locally:
   **Server-Sent Events** (an `evidence` frame after recall, `delta` frames as the
   model generates, then a `done` frame with the full envelope — the frontend
   drives the live-reasoning UI off this), `POST /recall` → `{evidence}`
-  (retrieval only), and `GET /health`. Serializes to the contract in
+  (retrieval only), `GET /incidents?limit=` → `{incidents: [{item, distance:null}]}`
+  (browse the whole episodic library, newest-first) and `GET /incidents/search?q=&k=`
+  → `{query, incidents: [{item, distance}]}` (semantic search — embeds `q` and
+  ranks by CockroachDB VECTOR distance, the incident-library page's showcase of
+  vector recall), `POST /incidents/{id}/feedback` `{helpful: bool}` (the
+  learning loop — see below), and `GET /health`. Serializes to the contract in
   `frontend/src/api/types.ts`. Requires `fastapi` + `uvicorn` (in
   requirements.txt). Verified end-to-end against the local node (both the
   blocking and streaming paths).
 - **The frontend** (`frontend/`, React + Vite + TypeScript) — a chat UI: alert →
   diagnosis, with an evidence panel showing recalled incidents/docs/changes + the
-  upstream trace. Runs in mock mode with no backend; set `VITE_API_URL` (a
-  `.env.local` pointing at `http://localhost:8000` is committed) to hit the API.
-  `npm run build` + typecheck pass.
+  upstream trace (similarity bars, an expand/collapse call-trace, and
+  bidirectional citation↔evidence highlighting). A second **Incident library**
+  page (header nav) browses every past incident and semantic-searches them via
+  `/incidents/search` (the vector-search showcase); each card's **Ask AI** button
+  jumps back to Triage with the incident's symptoms pre-filled as a fresh
+  conversation. Runs in mock mode with no backend (mock corpus + a keyword-overlap
+  stand-in for vector distance); set `VITE_API_URL` (a `.env.local` pointing at
+  `http://localhost:8000` is committed) to hit the API. `npm run build` +
+  typecheck pass.
 
 Not yet built / deferred:
 - **Bedrock model access** (Claude + Titan) — long-lead, needs the AWS console;
@@ -252,3 +263,28 @@ write-back tests) the loop is single-turn and `session_id` stays `None` — so
 existing callers are unchanged. The API (`POST /chat`) and the frontend thread
 `session_id` through; the frontend's "＋ New incident" button clears it to start
 a fresh conversation.
+
+## Learning loop (feedback → recallable memory)
+
+felix only *learns* from diagnoses a human confirms were good. This falls out of
+the existing write-back: a live diagnosis is stored via `insert_minimal` (no
+embedding → **invisible to recall**), so an unreviewed guess never pollutes
+future retrieval. Human feedback promotes or discards it:
+
+- **👍 helpful** (`POST /incidents/{id}/feedback {helpful:true}`): the endpoint
+  embeds the incident's `title + symptoms` (the *same* text the seeder embeds,
+  so it lands in the same vector subspace) and `UPDATE`s the row's `embedding` +
+  sets `feedback = 'helpful'`. The incident is now recallable — a future similar
+  alert will surface it. It also starts appearing in the library's vector search
+  with a **✓ confirmed** badge.
+- **👎 not helpful** (`{helpful:false}`): sets `feedback = 'not_helpful'` and
+  clears the embedding again, so a diagnosis judged wrong is never recalled.
+
+`incidents.feedback` (`'helpful' | 'not_helpful' | NULL`) is the new column
+(idempotent `ALTER TABLE ... ADD COLUMN IF NOT EXISTS`, mirroring
+`active_incidents.source`). Every vote is also written to `agent_actions`
+(`action_type='feedback'`). Repo primitive: `IncidentRepository.record_feedback`.
+The frontend renders 👍/👎 on each `DiagnosisCard` (keyed on
+`diagnosis.incident_id`); mock mode no-ops the call. Seed incidents already carry
+embeddings and a NULL feedback, so they stay recallable exactly as before — the
+gate only applies to live-diagnosed rows.

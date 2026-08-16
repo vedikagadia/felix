@@ -490,6 +490,56 @@ body {
   color: var(--cite);
   border-color: #6b5623;
 }
+.badge--confirmed {
+  color: var(--graph);
+  border-color: #2f5a30;
+  margin-left: 8px;
+  vertical-align: middle;
+}
+
+/* ── feedback loop (👍/👎 on a diagnosis) ────────────────────────────────── */
+
+.feedback {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px dashed var(--border);
+  font-size: 13px;
+}
+
+.feedback__prompt {
+  color: var(--text-dim);
+}
+
+.feedback__btn {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  padding: 4px 10px;
+  cursor: pointer;
+  font-size: 13px;
+}
+
+.feedback__btn:hover:not(:disabled) {
+  border-color: var(--accent);
+}
+
+.feedback__btn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.feedback--done {
+  color: var(--graph);
+}
+
+.feedback__error {
+  color: var(--inc);
+}
 
 /* ── thinking + error ───────────────────────────────────────────────────── */
 
@@ -1005,6 +1055,166 @@ body {
   padding: 0 8px;
 }
 
+/* ── header nav (Triage / Incident library) ─────────────────────────────── */
+
+.app__nav {
+  display: flex;
+  gap: 4px;
+  margin-left: 28px;
+  margin-right: auto;
+}
+
+.app__navlink {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-dim);
+  padding: 6px 4px;
+  font-size: 13px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.app__navlink:hover {
+  color: var(--text);
+}
+
+.app__navlink.is-active {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ── incident library page ───────────────────────────────────────────────── */
+
+.app__body--single {
+  display: block;
+  overflow-y: auto;
+}
+
+.library {
+  max-width: 860px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+}
+
+.library__head h2 {
+  margin: 0 0 4px;
+  font-size: 22px;
+}
+
+.library__sub {
+  margin: 0 0 18px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+
+.library__searchrow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 4px 12px;
+}
+
+.library__searchrow:focus-within {
+  border-color: var(--accent);
+}
+
+.library__searchicon {
+  color: var(--text-faint);
+  font-size: 18px;
+}
+
+.library__search {
+  flex: 1;
+  background: transparent;
+  border: none;
+  outline: none;
+  color: var(--text);
+  font-size: 15px;
+  padding: 10px 0;
+}
+
+.library__clear {
+  background: transparent;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  color: var(--text-dim);
+  padding: 4px 10px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.library__clear:hover {
+  color: var(--text);
+  border-color: var(--accent);
+}
+
+.library__status {
+  min-height: 18px;
+  margin: 12px 2px;
+  color: var(--text-faint);
+  font-size: 12px;
+}
+
+.library__error {
+  margin: 12px 0;
+}
+
+.library__empty {
+  color: var(--text-dim);
+  text-align: center;
+  padding: 40px 0;
+}
+
+.library__list {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+.libcard {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--inc);
+  border-radius: var(--radius);
+  padding: 14px 16px;
+}
+
+.libcard__head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+}
+
+.libcard__title {
+  font-weight: 600;
+  font-size: 15px;
+}
+
+.libcard__footer {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.btn--askai {
+  margin-left: auto;
+  background: var(--accent);
+  border-color: var(--accent);
+  color: #1a1206;
+  padding: 7px 14px;
+}
+
+.btn--askai:hover {
+  filter: brightness(1.08);
+}
+
 /* ── responsive ─────────────────────────────────────────────────────────── */
 
 @media (max-width: 900px) {
@@ -1015,5 +1225,8 @@ body {
   .evidence {
     border-top: 1px solid var(--border);
     max-height: 45vh;
+  }
+  .app__nav {
+    margin-left: 12px;
   }
 }

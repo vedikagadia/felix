@@ -30,6 +30,12 @@ export interface Incident {
   tags?: string[];
   occurred_at?: string | null;
   resolution_steps?: ResolutionStep[];
+  /**
+   * Human feedback on a live-diagnosed incident: "helpful" (confirmed → embedded
+   * into recallable memory), "not_helpful" (kept out of recall), or null/absent
+   * (unreviewed, or a seeded incident). See POST /incidents/{id}/feedback.
+   */
+  feedback?: "helpful" | "not_helpful" | null;
 }
 
 export interface DocChunk {
@@ -153,6 +159,35 @@ export interface ChatResponse {
   evidence: EvidencePacket;
   /** The conversation this turn belongs to; echo it on the next request to continue. */
   session_id?: string | null;
+}
+
+// ── incident library (browse + semantic search) ─────────────────────────────
+
+/**
+ * One incident in the library view. `distance` is the L2 vector distance from
+ * the search query (lower = closer) when the list came from a semantic search,
+ * or null when browsing the whole library unranked. Same shape either way so
+ * the page renders one list. See `GET /incidents` and `GET /incidents/search`.
+ */
+export interface IncidentHit {
+  item: Incident;
+  distance: number | null;
+}
+
+export interface IncidentsResponse {
+  incidents: IncidentHit[];
+  /** Echoed back by the search endpoint; absent when browsing. */
+  query?: string;
+}
+
+/**
+ * Response from POST /incidents/{id}/feedback. `recallable` reflects whether the
+ * incident now carries an embedding (true after 👍, false after 👎).
+ */
+export interface FeedbackResponse {
+  incident_id: string;
+  feedback: "helpful" | "not_helpful";
+  recallable: boolean;
 }
 
 // ── real-time CDC alerts (see .orchestration/CDC_INTERFACE.md §7) ────────────

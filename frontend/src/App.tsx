@@ -5,6 +5,7 @@ import type {
   ChatResponse,
   Diagnosis,
   EvidencePacket,
+  Incident,
   SessionResponse,
 } from "./api/types";
 import { sendChatStream, usingMock } from "./api/client";
@@ -13,6 +14,7 @@ import { AlertBanner } from "./components/AlertBanner";
 import { AlertComposer } from "./components/AlertComposer";
 import { ChatThread } from "./components/ChatThread";
 import { EvidencePanel } from "./components/EvidencePanel";
+import { IncidentsPage } from "./components/IncidentsPage";
 
 export interface Turn {
   id: number;
@@ -77,11 +79,25 @@ export function App() {
   // hovering a diagnosis citation chip or an evidence card sets it, so the two
   // panes highlight each other. null = nothing focused.
   const [activeCitation, setActiveCitation] = useState<string | null>(null);
+  // Which page is showing: the live triage chat, or the incident library.
+  const [view, setView] = useState<"chat" | "incidents">("chat");
+  // Text to drop into the composer from the library's "Ask AI". `nonce` bumps
+  // on every click so re-asking the same incident re-fills the box.
+  const [prefill, setPrefill] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
 
   const activeTurn = turns.find((t) => t.id === activeId) ?? null;
 
   function newIncident() {
     setSessionId(null);
+  }
+
+  // "Ask AI" from the incident library: jump to the chat, start a fresh
+  // conversation, and pre-fill the composer with this incident's symptoms so
+  // the operator can diagnose the same class of problem live.
+  function askAI(incident: Incident) {
+    setSessionId(null);
+    setPrefill((p) => ({ text: incident.symptoms, nonce: p.nonce + 1 }));
+    setView("chat");
   }
 
   // Open the triage session behind a clicked alert: load its pre-seeded turns,
@@ -166,6 +182,22 @@ export function App() {
             <p>SRE incident-memory agent</p>
           </div>
         </div>
+        <nav className="app__nav">
+          <button
+            type="button"
+            className={`app__navlink ${view === "chat" ? "is-active" : ""}`}
+            onClick={() => setView("chat")}
+          >
+            Triage
+          </button>
+          <button
+            type="button"
+            className={`app__navlink ${view === "incidents" ? "is-active" : ""}`}
+            onClick={() => setView("incidents")}
+          >
+            Incident library
+          </button>
+        </nav>
         {usingMock && (
           <span className="badge badge--mock" title="Set VITE_API_URL to use a real backend">
             mock mode
@@ -173,33 +205,43 @@ export function App() {
         )}
       </header>
 
-      <AlertBanner onSelect={openAlert} activeSessionId={sessionId} />
+      {view === "incidents" ? (
+        <main className="app__body app__body--single">
+          <IncidentsPage onAskAI={askAI} />
+        </main>
+      ) : (
+        <>
+          <AlertBanner onSelect={openAlert} activeSessionId={sessionId} />
 
-      <main className="app__body">
-        <section className="chat">
-          <ChatThread
-            turns={turns}
-            activeId={activeId}
-            onSelect={setActiveId}
-            activeCitation={activeCitation}
-            onCitationFocus={setActiveCitation}
-          />
-          <AlertComposer
-            onSubmit={submit}
-            disabled={busy}
-            continuing={sessionId !== null}
-            onNewIncident={newIncident}
-          />
-        </section>
+          <main className="app__body">
+            <section className="chat">
+              <ChatThread
+                turns={turns}
+                activeId={activeId}
+                onSelect={setActiveId}
+                activeCitation={activeCitation}
+                onCitationFocus={setActiveCitation}
+              />
+              <AlertComposer
+                onSubmit={submit}
+                disabled={busy}
+                continuing={sessionId !== null}
+                onNewIncident={newIncident}
+                prefill={prefill.text}
+                prefillKey={prefill.nonce}
+              />
+            </section>
 
-        <aside className="evidence">
-          <EvidencePanel
-            turn={activeTurn}
-            activeCitation={activeCitation}
-            onCitationFocus={setActiveCitation}
-          />
-        </aside>
-      </main>
+            <aside className="evidence">
+              <EvidencePanel
+                turn={activeTurn}
+                activeCitation={activeCitation}
+                onCitationFocus={setActiveCitation}
+              />
+            </aside>
+          </main>
+        </>
+      )}
     </div>
   );
 }

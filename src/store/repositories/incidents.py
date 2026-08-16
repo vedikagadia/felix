@@ -119,6 +119,41 @@ class IncidentRepository(BaseRepository):
             row = cur.fetchone()
         return str(row[0])
 
+    def record_feedback(
+        self, incident_id: str, *, helpful: bool, embedding: Sequence[float] | None = None
+    ) -> bool:
+        """Apply human feedback to a live-diagnosed incident — felix's learning
+        signal (see schema.sql `incidents.feedback`).
+
+        `helpful=True`: mark it 'helpful' AND set its embedding, promoting the
+        row into recallable episodic memory (a live diagnosis is written with a
+        NULL embedding, so this is what makes it findable by future alerts).
+        `helpful=False`: mark it 'not_helpful' and clear the embedding again, so
+        a diagnosis judged wrong is never recalled. Idempotent — re-marking just
+        overwrites. Returns True if the incident existed (a row was updated).
+        """
+        with self.conn.cursor() as cur:
+            if helpful:
+                # embedding is required to promote; the endpoint always supplies it.
+                cur.execute(
+                    """
+                    UPDATE incidents
+                    SET feedback = 'helpful', embedding = %s::VECTOR(1024)
+                    WHERE id = %s
+                    """,
+                    (vec_literal(embedding) if embedding is not None else None, incident_id),
+                )
+            else:
+                cur.execute(
+                    """
+                    UPDATE incidents
+                    SET feedback = 'not_helpful', embedding = NULL
+                    WHERE id = %s
+                    """,
+                    (incident_id,),
+                )
+            return cur.rowcount > 0
+
     def add_resolution_steps(self, incident_id: str, steps: list[ResolutionStep]) -> None:
         """Insert ordered resolution_steps for an existing incident."""
         with self.conn.cursor() as cur:
@@ -139,7 +174,7 @@ class IncidentRepository(BaseRepository):
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                SELECT id, title, symptoms, root_cause, service, severity
+                SELECT id, title, symptoms, root_cause, service, severity, feedback
                 FROM incidents
                 WHERE id = %s
                 """,
@@ -165,11 +200,97 @@ class IncidentRepository(BaseRepository):
             root_cause=row[3],
             service=row[4],
             severity=row[5],
+            feedback=row[6],
             resolution_steps=[
                 ResolutionStep(step_order=int(s[0]), action=s[1], command=s[2], outcome=s[3])
                 for s in step_rows
             ],
         )
+
+    @staticmethod
+    def _row_to_incident(r) -> Incident:
+        """Build an Incident from a (id, title, symptoms, root_cause, service,
+        severity, tags, occurred_at, feedback) row — the column order shared by
+        list_all() and search(). resolution_steps are attached separately (batch)."""
+        return Incident(
+            id=str(r[0]),
+            title=r[1],
+            symptoms=r[2],
+            root_cause=r[3],
+            service=r[4],
+            severity=r[5],
+            tags=list(r[6]) if r[6] else [],
+            occurred_at=r[7],
+            feedback=r[8],
+        )
+
+    def _attach_steps(self, incidents: list[Incident]) -> None:
+        """Batch-load resolution_steps for many incidents in one query and attach
+        them in place — avoids an N+1 when hydrating a whole list/search result."""
+        if not incidents:
+            return
+        ids = [i.id for i in incidents]
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT incident_id, step_order, action, command, outcome
+                FROM resolution_steps
+                WHERE incident_id = ANY(%s)
+                ORDER BY incident_id, step_order
+                """,
+                (ids,),
+            )
+            rows = cur.fetchall()
+        by_id: dict[str, list[ResolutionStep]] = {}
+        for r in rows:
+            by_id.setdefault(str(r[0]), []).append(
+                ResolutionStep(step_order=int(r[1]), action=r[2], command=r[3], outcome=r[4])
+            )
+        for inc in incidents:
+            inc.resolution_steps = by_id.get(inc.id, [])
+
+    def list_all(self, limit: int = 200) -> list[Incident]:
+        """All incidents (newest first), hydrated with their resolution_steps —
+        the "browse the whole library" read behind GET /incidents. Ordered by
+        when the incident occurred (live-minted rows with a NULL occurred_at sort
+        last). Not vector-ranked: this is the un-searched, scroll-through view."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, title, symptoms, root_cause, service, severity, tags, occurred_at, feedback
+                FROM incidents
+                ORDER BY occurred_at DESC NULLS LAST, created_at DESC
+                LIMIT %s
+                """,
+                (limit,),
+            )
+            rows = cur.fetchall()
+        incidents = [self._row_to_incident(r) for r in rows]
+        self._attach_steps(incidents)
+        return incidents
+
+    def search(self, query_vec: Sequence[float], k: int = 10) -> list[Recall[Incident]]:
+        """Semantic search over the incident library: top-k nearest to query_vec
+        by L2 distance on the embedding, hydrated with resolution_steps. This is
+        the showcase of CockroachDB's VECTOR search behind GET /incidents/search
+        — richer than recall() (returns tags/occurred_at/steps for the browse
+        cards) and it skips embedding-less rows (live-minted incidents)."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                """
+                SELECT id, title, symptoms, root_cause, service, severity, tags, occurred_at, feedback,
+                       embedding <-> %s::VECTOR(1024) AS distance
+                FROM incidents
+                WHERE embedding IS NOT NULL
+                ORDER BY distance
+                LIMIT %s
+                """,
+                (vec_literal(query_vec), k),
+            )
+            rows = cur.fetchall()
+        recalls = [Recall(item=self._row_to_incident(r), distance=float(r[9])) for r in rows]
+        self._attach_steps([rc.item for rc in recalls])
+        return recalls
 
     def recall(self, query_vec: Sequence[float], k: int = 5) -> list[Recall[Incident]]:
         """Top-k incidents nearest to query_vec, by L2 distance on embedding."""

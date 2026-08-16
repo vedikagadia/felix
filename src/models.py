@@ -37,6 +37,9 @@ class Incident:
     tags: list[str] = field(default_factory=list)
     occurred_at: datetime | None = None
     resolution_steps: list[ResolutionStep] = field(default_factory=list)
+    # Human feedback on a live-diagnosed incident: "helpful" | "not_helpful" |
+    # None (unreviewed). Drives whether the incident is embedded/recallable.
+    feedback: str | None = None
 
 
 @dataclass

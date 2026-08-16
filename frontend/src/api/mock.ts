@@ -9,7 +9,14 @@
  * Delete this file (and its use in client.ts) once the real backend is wired.
  */
 
-import type { ChatRequest, ChatResponse, StreamHandlers } from "./types";
+import type {
+  ChatRequest,
+  ChatResponse,
+  FeedbackResponse,
+  Incident,
+  IncidentHit,
+  StreamHandlers,
+} from "./types";
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 
@@ -286,6 +293,169 @@ export async function mockChat(req: ChatRequest): Promise<ChatResponse> {
  * live-reasoning UI can be developed with no backend. (The real backend streams
  * the model's raw JSON; mock streams the prose summary for a nicer preview.)
  */
+// ── incident-library mock corpus ────────────────────────────────────────────
+
+/** A small, WORLD-flavoured incident library so the browse/search page works
+ * with no backend. Newest first (matches the real `list_all` ordering). */
+const MOCK_INCIDENTS: Incident[] = [
+  {
+    id: "mock-lib-1",
+    title: "Customers report slow checkout — dashboards green, no alert fired",
+    symptoms:
+      "Support tickets spike about slow checkout, but latency dashboards look flat and no SLO alert fired.",
+    root_cause:
+      "A recent merge changed LATENCY_AGGREGATION in metrics.py from p99 to avg, hiding tail latency.",
+    service: "checkout-handler",
+    severity: "SEV2",
+    tags: ["latency", "customer-reported", "dashboards-green", "metrics"],
+    occurred_at: "2026-08-09T16:40:00Z",
+    resolution_steps: [
+      { step_order: 1, action: "Reverted LATENCY_AGGREGATION to p99", command: "git revert a1b2c3d", outcome: "Tail latency visible again" },
+      { step_order: 2, action: "Confirmed p99 breached SLO for the hidden window", command: null, outcome: "Regression scoped" },
+    ],
+  },
+  {
+    id: "mock-lib-2",
+    title: "db.pool.exhausted during flash-sale traffic spike",
+    symptoms:
+      "Checkout errors with db.pool.exhausted under load; scaling the DB gave only partial relief.",
+    root_cause:
+      "CheckoutHandler.process holds a pooled connection across PaymentClient.charge's retry loop, draining the pool under load.",
+    service: "checkout-handler",
+    severity: "SEV2",
+    tags: ["pool", "checkout", "traffic-spike", "connection"],
+    occurred_at: "2026-07-30T09:12:00Z",
+    resolution_steps: [
+      { step_order: 1, action: "Released the connection before the charge retry loop", command: null, outcome: "Pool utilisation dropped under the same load" },
+      { step_order: 2, action: "Added a max-retry budget to the payment path", command: null, outcome: "Bounded worst-case hold time" },
+    ],
+  },
+  {
+    id: "mock-lib-3",
+    title: "payment.retry storm amplified by aggressive backoff config",
+    symptoms:
+      "Payment gateway latency triggered a retry storm; downstream saturation cascaded to checkout.",
+    root_cause: "Backoff base was set too low after a config change, so retries piled up instead of spreading out.",
+    service: "payment-gateway",
+    severity: "SEV2",
+    tags: ["payment", "retry", "backoff", "cascade"],
+    occurred_at: "2026-07-14T11:05:00Z",
+    resolution_steps: [
+      { step_order: 1, action: "Raised backoff base and added jitter", command: null, outcome: "Retry rate fell to baseline" },
+    ],
+  },
+  {
+    id: "mock-lib-4",
+    title: "fulfillment.queue.full — fulfillment-worker deployment down",
+    symptoms: "Fulfillment queue depth climbed to its cap; zero drain; orders stuck in 'paid'.",
+    root_cause: "The fulfillment-worker deployment was scaled to zero by a bad rollout and never drained the queue.",
+    service: "fulfillment-worker",
+    severity: "SEV2",
+    tags: ["fulfillment-worker", "queue-full", "outage"],
+    occurred_at: "2026-06-11T19:22:00Z",
+    resolution_steps: [
+      { step_order: 1, action: "Scaled fulfillment-worker back up", command: "kubectl scale deploy/fulfillment-worker --replicas=4", outcome: "Queue drained" },
+    ],
+  },
+  {
+    id: "mock-lib-5",
+    title: "checkout-handler CrashLoopBackOff after deploy — broken import",
+    symptoms: "New checkout-handler pods crash on boot with an ImportError right after a deploy.",
+    root_cause: "A merge left an import referencing a module that was renamed; CI didn't catch it.",
+    service: "checkout-handler",
+    severity: "SEV1",
+    tags: ["bad-deploy", "crash-loop", "rollback"],
+    occurred_at: "2026-05-20T15:05:00Z",
+    resolution_steps: [
+      { step_order: 1, action: "Rolled back to the previous image", command: "kubectl rollout undo deploy/checkout-handler", outcome: "Pods healthy" },
+    ],
+  },
+  {
+    id: "mock-lib-6",
+    title: "checkout-handler pods evicted — disk full from debug logging",
+    symptoms: "Pods evicted with DiskPressure; node disk full from leftover verbose debug logs.",
+    root_cause: "A debug log level was left on in prod, filling the ephemeral disk.",
+    service: "checkout-handler",
+    severity: "SEV2",
+    tags: ["disk", "infra", "logging"],
+    occurred_at: "2026-04-02T02:20:00Z",
+    resolution_steps: [
+      { step_order: 1, action: "Reset log level to INFO and cleared old logs", command: null, outcome: "Disk pressure cleared" },
+    ],
+  },
+  {
+    id: "mock-lib-7",
+    title: "Redis cache stampede on cold start caused checkout latency",
+    symptoms: "After a cache flush, checkout p99 spiked as every request missed and hit the DB at once.",
+    root_cause: "No request coalescing on cache miss; a cold cache stampeded the primary DB.",
+    service: "checkout-handler",
+    severity: "SEV3",
+    tags: ["cache", "redis", "latency", "cold-start"],
+    occurred_at: "2026-03-18T08:30:00Z",
+    resolution_steps: [
+      { step_order: 1, action: "Added single-flight coalescing on cache miss", command: null, outcome: "Stampede eliminated on next flush" },
+    ],
+  },
+  {
+    id: "mock-lib-8",
+    title: "Payment failure spike went unpaged — threshold set too high",
+    symptoms: "Elevated payment failures for 40 minutes with no page; customers noticed before we did.",
+    root_cause: "The alert threshold was set well above the real failure baseline, so it never fired.",
+    service: "payment-gateway",
+    severity: "SEV3",
+    tags: ["alerting-gap", "observability", "payment-failed"],
+    occurred_at: "2026-02-27T17:48:00Z",
+    resolution_steps: [
+      { step_order: 1, action: "Lowered the failure-rate alert threshold and added a burn-rate alert", command: null, outcome: "Faster detection" },
+    ],
+  },
+];
+
+/** Tokenise for the crude mock relevance score (real backend uses vectors). */
+function tokens(s: string): string[] {
+  return s.toLowerCase().match(/[a-z0-9.]+/g) ?? [];
+}
+
+/** A plausible fake L2 distance from keyword overlap, so mock search still
+ * ranks sensibly. The real endpoint ranks by CockroachDB vector distance. */
+function mockDistance(query: string, inc: Incident): number {
+  const q = new Set(tokens(query));
+  if (q.size === 0) return 1.0;
+  const hay = tokens(
+    [inc.title, inc.symptoms, inc.root_cause ?? "", inc.service ?? "", (inc.tags ?? []).join(" ")].join(" "),
+  );
+  const haySet = new Set(hay);
+  let hits = 0;
+  for (const t of q) if (haySet.has(t)) hits += 1;
+  const overlap = hits / q.size; // 0..1
+  // Map overlap→distance: full overlap ≈ 0.35, none ≈ 1.15.
+  return Math.max(0.2, Math.min(1.25, 1.15 - 0.8 * overlap));
+}
+
+export async function mockListIncidents(): Promise<IncidentHit[]> {
+  await sleep(200);
+  return MOCK_INCIDENTS.map((item) => ({ item, distance: null }));
+}
+
+export async function mockSearchIncidents(query: string): Promise<IncidentHit[]> {
+  await sleep(300);
+  return MOCK_INCIDENTS.map((item) => ({ item, distance: mockDistance(query, item) }))
+    .sort((a, b) => (a.distance ?? 1) - (b.distance ?? 1))
+    .slice(0, 12);
+}
+
+export async function mockSubmitFeedback(
+  incidentId: string,
+  helpful: boolean,
+): Promise<FeedbackResponse> {
+  await sleep(200);
+  return {
+    incident_id: incidentId,
+    feedback: helpful ? "helpful" : "not_helpful",
+    recallable: helpful,
+  };
+}
+
 export async function mockChatStream(req: ChatRequest, handlers: StreamHandlers): Promise<void> {
   const response = resolveScenario(req);
   await sleep(300);

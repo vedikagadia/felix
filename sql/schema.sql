@@ -31,6 +31,13 @@ CREATE TABLE IF NOT EXISTS incidents (
     embedding   VECTOR(1024)               -- Titan V2 of (title + symptoms)
 );
 CREATE VECTOR INDEX IF NOT EXISTS incidents_embedding_idx ON incidents (embedding);
+-- Human feedback on a live-diagnosed incident: 'helpful' | 'not_helpful' | NULL
+-- (unreviewed). This is felix's learning signal — a live diagnosis is written
+-- with a NULL embedding (invisible to recall); marking it 'helpful' embeds it
+-- (promotes it into recallable memory), 'not_helpful' clears the embedding again
+-- (keeps it dark). So episodic recall only ever surfaces confirmed-good diagnoses.
+-- Idempotent for already-seeded DBs (see the active_incidents.source pattern).
+ALTER TABLE incidents ADD COLUMN IF NOT EXISTS feedback STRING;
 
 -- Ordered list of steps that actually resolved an incident — the reusable "playbook"
 -- the agent recalls and presents. This is CURATED KNOWLEDGE, distinct from agent_actions

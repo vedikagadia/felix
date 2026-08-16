@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { ChatRequest } from "../api/types";
 
 const EXAMPLES = [
@@ -11,6 +11,8 @@ export function AlertComposer({
   disabled,
   continuing = false,
   onNewIncident,
+  prefill,
+  prefillKey = 0,
 }: {
   onSubmit: (req: ChatRequest) => void;
   disabled: boolean;
@@ -18,10 +20,19 @@ export function AlertComposer({
   continuing?: boolean;
   /** Clear the conversation so the next message opens a fresh incident. */
   onNewIncident?: () => void;
+  /** Text to drop into the input (e.g. "Ask AI" about a library incident). */
+  prefill?: string;
+  /** Bump to re-apply the same `prefill` text (so clicking twice re-fills). */
+  prefillKey?: number;
 }) {
   const [alert, setAlert] = useState("");
   const [originNode, setOriginNode] = useState("");
   const [showAdvanced, setShowAdvanced] = useState(false);
+
+  // Adopt a prefill (from the incident library's "Ask AI") when it changes.
+  useEffect(() => {
+    if (prefillKey > 0 && prefill) setAlert(prefill);
+  }, [prefillKey, prefill]);
 
   function fire() {
     const trimmed = alert.trim();
