@@ -8,6 +8,10 @@ venv/
 
 # Secrets & local config
 .env
+# Filled-in ECS task defs (real DATABASE_URL / GEMINI_API_KEY / DUCKDNS_TOKEN).
+# The committed deploy/task-def-*.json carry REPLACE_WITH_… placeholders; copy
+# one to *.local.json, fill secrets there, and register THAT file.
+deploy/*.local.json
 
 # Local single-node CockroachDB data dir
 .crdb-data/

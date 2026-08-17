@@ -1,0 +1,35 @@
+{
+  "family": "felix-sample",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "256",
+  "memory": "1024",
+  "executionRoleArn": "arn:aws:iam::287211515912:role/felix-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::287211515912:role/felix-ecs-task",
+  "containerDefinitions": [
+    {
+      "name": "felix-sample",
+      "image": "287211515912.dkr.ecr.us-east-1.amazonaws.com/felix:latest",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 8001, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "ROLE", "value": "sample" },
+        { "name": "SAMPLE_PORT", "value": "8001" },
+        { "name": "DUCKDNS_DOMAIN", "value": "felix-checkout" },
+
+        { "name": "DATABASE_URL", "value": "REPLACE_WITH_COCKROACH_URL" },
+        { "name": "DUCKDNS_TOKEN", "value": "REPLACE_WITH_DUCKDNS_TOKEN" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/felix",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "sample"
+        }
+      }
+    }
+  ]
+}

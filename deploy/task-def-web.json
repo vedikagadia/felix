@@ -1,0 +1,38 @@
+{
+  "family": "felix-web",
+  "requiresCompatibilities": ["FARGATE"],
+  "networkMode": "awsvpc",
+  "cpu": "512",
+  "memory": "4096",
+  "executionRoleArn": "arn:aws:iam::287211515912:role/felix-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::287211515912:role/felix-ecs-task",
+  "containerDefinitions": [
+    {
+      "name": "felix-web",
+      "image": "287211515912.dkr.ecr.us-east-1.amazonaws.com/felix:latest",
+      "essential": true,
+      "portMappings": [
+        { "containerPort": 8000, "protocol": "tcp" }
+      ],
+      "environment": [
+        { "name": "ROLE", "value": "web" },
+        { "name": "FELIX_RUN_WATCHER", "value": "1" },
+        { "name": "EMBED_PROVIDER", "value": "local" },
+        { "name": "LLM_PROVIDER", "value": "gemini" },
+        { "name": "DUCKDNS_DOMAIN", "value": "felix-demo" },
+
+        { "name": "DATABASE_URL", "value": "REPLACE_WITH_COCKROACH_URL" },
+        { "name": "GEMINI_API_KEY", "value": "REPLACE_WITH_GEMINI_KEY" },
+        { "name": "DUCKDNS_TOKEN", "value": "REPLACE_WITH_DUCKDNS_TOKEN" }
+      ],
+      "logConfiguration": {
+        "logDriver": "awslogs",
+        "options": {
+          "awslogs-group": "/ecs/felix",
+          "awslogs-region": "us-east-1",
+          "awslogs-stream-prefix": "web"
+        }
+      }
+    }
+  ]
+}
