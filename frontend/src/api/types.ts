@@ -285,6 +285,57 @@ export interface DbOverview {
   tools_used?: string[];
 }
 
+/**
+ * A reviewable DB-write plan from `POST /db/plan` — felix's natural-language
+ * request mapped to exactly ONE CockroachDB MCP tool call, NOT yet executed
+ * (preview-then-confirm). `tool` is an entry in the additive-write allowlist
+ * (create_table / create_database / insert_rows / select_query); `args` is the
+ * single argument that tool takes; `write` is false for a read-only SELECT.
+ */
+export interface DbPlan {
+  tool: string;
+  args: Record<string, string>;
+  explanation: string;
+  write: boolean;
+}
+
+/**
+ * Response from `POST /db/plan`. `plan` is the mapped tool call to preview, or
+ * null with a `reason` when the request couldn't be mapped safely (ambiguous,
+ * destructive/unsupported, or not a DB operation).
+ */
+export interface DbPlanResponse {
+  plan: DbPlan | null;
+  reason?: string;
+}
+
+/**
+ * Result of `POST /db/execute` — the plan actually run against the cluster over
+ * MCP. `ok` is false (with `error`) on a tool/MCP failure; `result` is the raw
+ * tool payload (e.g. affected-row info, or SELECT rows) on success.
+ */
+export interface DbExecuteResult {
+  ok: boolean;
+  tool: string;
+  args: Record<string, string>;
+  result?: unknown;
+  error?: unknown;
+}
+
+/**
+ * Status of the CLI panel's terminal, from `GET /cli/status`. `enabled` gates
+ * the whole panel (FELIX_CLI_ENABLED on the backend); `ccloud_installed` /
+ * `account` let the panel show whether `ccloud` is present and which Cloud
+ * account it's authed as, so the operator isn't staring at a blank shell.
+ */
+export interface CliStatus {
+  enabled: boolean;
+  ccloud_installed: boolean;
+  ccloud_path: string | null;
+  account: string | null;
+  cluster_id: string | null;
+}
+
 /** One pre-seeded turn of a CDC session's transcript (`GET /sessions/{id}`). */
 export interface SessionTurn {
   turn_order: number;

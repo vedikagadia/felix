@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import os
 
-from fastapi import Depends, FastAPI, HTTPException
+from fastapi import Depends, FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -64,6 +64,21 @@ class FeedbackRequest(BaseModel):
         description="True if the diagnosis was helpful (promote it into recallable "
         "memory), False if not (keep it out of recall).",
     )
+
+
+class DbPlanRequest(BaseModel):
+    instruction: str = Field(
+        ...,
+        min_length=1,
+        description="A natural-language DB request (e.g. 'add a table for on-call "
+        "schedules'). felix maps it to ONE CockroachDB MCP tool call for review — "
+        "it is not executed here.",
+    )
+
+
+class DbExecuteRequest(BaseModel):
+    tool: str = Field(..., description="The MCP tool to run — must be in the NL allowlist.")
+    args: dict = Field(..., description="The tool's arguments, exactly as previewed in the plan.")
 
 
 def db_conn():
@@ -287,6 +302,103 @@ def create_app() -> FastAPI:
                 "Authenticate once with `python -m src mcp-probe`.",
             }
         return {"connected": True, "source": "cockroachdb-cloud-mcp", **overview}
+
+    @app.post("/db/plan")
+    def db_plan(req: DbPlanRequest) -> dict:
+        """Step 1 of the DB-write flow (preview-then-confirm): map a
+        natural-language request to ONE CockroachDB MCP tool call, WITHOUT
+        running it. felix's LLM has no native tool-calling, so this prompts the
+        model to emit a strict {tool, args} JSON, validates it against the
+        additive-write allowlist (`cockroach_mcp.NL_TOOLS`), and returns the plan
+        for the operator to review. The operator then POSTs it to /db/execute.
+
+        Returns {"plan": {tool, args, explanation, write} } on a mappable request,
+        or {"plan": null, "reason": ...} when it can't be mapped safely. 503 if
+        the LLM isn't configured; 503 if MCP isn't configured (nothing to run
+        against). No DB-URL connection, no write happens here."""
+        settings = get_settings()
+        if not settings.crdb_mcp_url or not settings.crdb_mcp_cluster_id:
+            raise HTTPException(
+                status_code=503,
+                detail="CockroachDB MCP not configured (set CRDB_MCP_URL + CRDB_MCP_CLUSTER_ID).",
+            )
+        if settings.llm_provider == "gemini" and not settings.gemini_api_key:
+            raise HTTPException(
+                status_code=503,
+                detail="LLM not configured: set GEMINI_API_KEY (or switch LLM_PROVIDER).",
+            )
+
+        from ..clients.llm import get_llm
+        from ..service.db_assistant import plan_operation
+
+        plan = plan_operation(get_llm(), req.instruction)
+        if plan.get("tool") is None:
+            return {"plan": None, "reason": plan.get("reason") or "Could not map the request to a tool."}
+        return {"plan": plan}
+
+    @app.post("/db/execute")
+    def db_execute(req: DbExecuteRequest) -> dict:
+        """Step 2 of the DB-write flow: run the previewed plan against the cluster
+        over MCP. The tool is re-validated against the additive-write allowlist
+        (`cockroach_mcp.NL_TOOLS`) so a client can't smuggle in an off-list tool.
+
+        Returns the raw run result: {ok, tool, args, result} on success or
+        {ok:false, tool, args, error} on a tool/MCP error (still HTTP 200 — the
+        panel shows the error and lets the operator retry). 503 if MCP isn't
+        configured; 403 if the tool isn't permitted."""
+        from ..clients import cockroach_mcp
+
+        settings = get_settings()
+        if not settings.crdb_mcp_url or not settings.crdb_mcp_cluster_id:
+            raise HTTPException(
+                status_code=503,
+                detail="CockroachDB MCP not configured (set CRDB_MCP_URL + CRDB_MCP_CLUSTER_ID).",
+            )
+        if req.tool not in cockroach_mcp.NL_TOOLS:
+            raise HTTPException(status_code=403, detail=f"tool {req.tool!r} is not permitted")
+
+        return cockroach_mcp.run_tool(req.tool, req.args)
+
+    @app.get("/cli/status")
+    def cli_status() -> dict:
+        """Whether the CLI panel's terminal is available, and whether `ccloud` is
+        installed / authed on the API host — so the panel can render a banner
+        ("ccloud not installed", auth hint) instead of a blank shell. Pure
+        introspection: no shell is spawned here (that's the WS /cli/ws path)."""
+        import shutil
+        import subprocess
+
+        settings = get_settings()
+        ccloud_path = shutil.which("ccloud")
+        account = None
+        if ccloud_path:
+            try:
+                out = subprocess.run(
+                    [ccloud_path, "auth", "whoami"],
+                    capture_output=True,
+                    text=True,
+                    timeout=8,
+                )
+                if out.returncode == 0:
+                    account = out.stdout.strip() or None
+            except (OSError, subprocess.SubprocessError):
+                account = None
+        return {
+            "enabled": settings.cli_enabled,
+            "ccloud_installed": ccloud_path is not None,
+            "ccloud_path": ccloud_path,
+            "account": account,
+            "cluster_id": settings.crdb_mcp_cluster_id,
+        }
+
+    @app.websocket("/cli/ws")
+    async def cli_ws(ws: WebSocket) -> None:
+        """Interactive terminal: bridges a real PTY (a login shell with `ccloud`
+        on PATH) to the browser's xterm.js. Gated by FELIX_CLI_ENABLED. See
+        `terminal.py` for the wire protocol and the security note."""
+        from .terminal import run_terminal
+
+        await run_terminal(ws)
 
     @app.get("/sessions/{session_id}")
     def get_session(session_id: str, conn=Depends(db_conn)) -> dict:

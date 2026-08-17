@@ -63,6 +63,15 @@ class Settings:
     metric_alert_default_p99_ms: float
     metric_alert_thresholds: dict[str, float]
 
+    # CLI panel (the interactive terminal at WS /cli/ws). `cli_enabled` gates a
+    # REAL shell exposed over the socket — off unless explicitly turned on, since
+    # it's effectively remote code execution (fine for a local demo, dangerous if
+    # the API is bound to a public interface). `cli_shell` overrides the login
+    # shell ($SHELL otherwise); `cli_cwd` the working directory the shell starts in.
+    cli_enabled: bool
+    cli_shell: str | None
+    cli_cwd: str | None
+
     @classmethod
     def load(cls) -> "Settings":
         load_dotenv()
@@ -88,6 +97,12 @@ class Settings:
             metric_alert_thresholds=_parse_thresholds(
                 os.environ.get("METRIC_ALERT_THRESHOLDS")
             ),
+            cli_enabled=(
+                os.environ.get("FELIX_CLI_ENABLED", "true").strip().lower()
+                in ("1", "true", "yes", "on")
+            ),
+            cli_shell=os.environ.get("FELIX_CLI_SHELL") or None,
+            cli_cwd=os.environ.get("FELIX_CLI_CWD") or None,
         )
 
 

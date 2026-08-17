@@ -17,6 +17,7 @@ import { EvidencePanel } from "./components/EvidencePanel";
 import { IncidentsPage } from "./components/IncidentsPage";
 import { LiveMonitoringPage } from "./components/LiveMonitoringPage";
 import { DbOverviewPage } from "./components/DbOverviewPage";
+import { CliPage } from "./components/CliPage";
 
 export interface Turn {
   id: number;
@@ -83,7 +84,7 @@ export function App() {
   const [activeCitation, setActiveCitation] = useState<string | null>(null);
   // Which page is showing: the triage chat, the incident library, or the live
   // monitoring panel.
-  const [view, setView] = useState<"chat" | "incidents" | "live" | "db">("chat");
+  const [view, setView] = useState<"chat" | "incidents" | "live" | "db" | "cli">("chat");
   // Text to drop into the composer from the library's "Ask AI". `nonce` bumps
   // on every click so re-asking the same incident re-fills the box.
   const [prefill, setPrefill] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
@@ -223,6 +224,13 @@ export function App() {
           >
             DB overview
           </button>
+          <button
+            type="button"
+            className={`app__navlink ${view === "cli" ? "is-active" : ""}`}
+            onClick={() => setView("cli")}
+          >
+            CLI
+          </button>
         </nav>
         {usingMock && (
           <span className="badge badge--mock" title="Set VITE_API_URL to use a real backend">
@@ -242,6 +250,10 @@ export function App() {
       ) : view === "db" ? (
         <main className="app__body app__body--single">
           <DbOverviewPage />
+        </main>
+      ) : view === "cli" ? (
+        <main className="app__body app__body--single">
+          <CliPage />
         </main>
       ) : (
         <>

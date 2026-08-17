@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
-import type { DbOverview, DbTable } from "../api/types";
-import { fetchDbOverview } from "../api/db";
+import type { DbExecuteResult, DbOverview, DbPlan, DbTable } from "../api/types";
+import { executeDbOperation, fetchDbOverview, planDbOperation } from "../api/db";
 
 /**
  * DB overview — a read-only view of the CockroachDB cluster, fetched from
@@ -74,12 +74,150 @@ export function DbOverviewPage() {
 
       {!loading && !error && data && data.connected && (
         <>
+          <DbWriteBox onExecuted={load} />
           {data.cluster && <ClusterCard cluster={data.cluster} toolsUsed={data.tools_used} />}
           <DatabasesSection data={data} />
           <RunningQueries queries={data.running_queries ?? []} />
         </>
       )}
     </div>
+  );
+}
+
+/**
+ * "Ask felix to change the DB" — a natural-language box that maps a request to
+ * ONE CockroachDB MCP tool call, previews it, and runs it only after the
+ * operator confirms (preview-then-confirm). The server exposes only additive
+ * write tools (create/insert), so the worst case is a new table or extra rows.
+ * On a successful run it refreshes the overview via `onExecuted`.
+ */
+function DbWriteBox({ onExecuted }: { onExecuted: () => void }) {
+  const [instruction, setInstruction] = useState("");
+  const [plan, setPlan] = useState<DbPlan | null>(null);
+  const [declineReason, setDeclineReason] = useState<string | null>(null);
+  const [planning, setPlanning] = useState(false);
+  const [running, setRunning] = useState(false);
+  const [result, setResult] = useState<DbExecuteResult | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  function reset() {
+    setPlan(null);
+    setDeclineReason(null);
+    setResult(null);
+    setError(null);
+  }
+
+  function onPlan() {
+    if (!instruction.trim()) return;
+    reset();
+    setPlanning(true);
+    planDbOperation(instruction.trim())
+      .then((res) => {
+        if (res.plan) setPlan(res.plan);
+        else setDeclineReason(res.reason ?? "felix couldn't map that request to a safe operation.");
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setPlanning(false));
+  }
+
+  function onRun() {
+    if (!plan) return;
+    setRunning(true);
+    setError(null);
+    executeDbOperation(plan)
+      .then((res) => {
+        setResult(res);
+        if (res.ok) onExecuted(); // refresh the overview so the new table/rows show
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : String(e)))
+      .finally(() => setRunning(false));
+  }
+
+  const arg = plan ? Object.entries(plan.args)[0] : null;
+
+  return (
+    <article className="dbcard dbwrite">
+      <header className="dbcard__head">
+        <div>
+          <span className="dbcard__title">Ask felix to change the DB</span>
+          <span className="dbcard__sub">
+            natural language → one MCP tool call · you review it before it runs
+          </span>
+        </div>
+        <span className="badge badge--accent">via CockroachDB MCP</span>
+      </header>
+
+      <div className="dbwrite__composer">
+        <textarea
+          className="dbwrite__input"
+          rows={2}
+          value={instruction}
+          placeholder="e.g. add a table for on-call schedules with engineer and week"
+          onChange={(e) => setInstruction(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) onPlan();
+          }}
+          disabled={planning || running}
+        />
+        <button
+          type="button"
+          className="dbwrite__plan"
+          onClick={onPlan}
+          disabled={planning || running || !instruction.trim()}
+        >
+          {planning ? "Planning…" : "Plan it"}
+        </button>
+      </div>
+
+      {declineReason && !plan && (
+        <p className="dbwrite__decline">{declineReason}</p>
+      )}
+
+      {error && <p className="dbwrite__error">{error}</p>}
+
+      {plan && (
+        <div className="dbwrite__preview">
+          <div className="dbwrite__previewhead">
+            <span className={`dbwrite__tool ${plan.write ? "is-write" : "is-read"}`}>
+              {plan.tool}
+            </span>
+            <span className="dbwrite__toolkind">{plan.write ? "write" : "read-only"}</span>
+          </div>
+          {plan.explanation && <p className="dbwrite__explain">{plan.explanation}</p>}
+          {arg && (
+            <pre className="dbwrite__sql">
+              <span className="dbwrite__argkey">{arg[0]}:</span> {arg[1]}
+            </pre>
+          )}
+
+          {!result && (
+            <div className="dbwrite__actions">
+              <button type="button" className="dbwrite__run" onClick={onRun} disabled={running}>
+                {running ? "Running…" : plan.write ? "Run it" : "Run query"}
+              </button>
+              <button
+                type="button"
+                className="dbwrite__cancel"
+                onClick={reset}
+                disabled={running}
+              >
+                Cancel
+              </button>
+            </div>
+          )}
+
+          {result && (
+            <div className={`dbwrite__result ${result.ok ? "is-ok" : "is-err"}`}>
+              <strong>{result.ok ? "✓ Executed over MCP" : "✗ MCP returned an error"}</strong>
+              <pre>{JSON.stringify(result.ok ? result.result : result.error, null, 2)}</pre>
+              <button type="button" className="dbwrite__cancel" onClick={reset}>
+                Done
+              </button>
+            </div>
+          )}
+        </div>
+      )}
+    </article>
   );
 }
 

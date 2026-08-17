@@ -1708,3 +1708,281 @@ body {
   font-size: 12px;
   color: var(--text-dim);
 }
+
+/* DB overview — "ask felix to change the DB" (NL write via MCP) */
+.badge--accent {
+  color: var(--accent);
+  border-color: rgba(240, 136, 62, 0.45);
+  background: rgba(240, 136, 62, 0.08);
+}
+.dbwrite {
+  border-color: rgba(240, 136, 62, 0.35);
+}
+.dbwrite__composer {
+  display: flex;
+  gap: 10px;
+  align-items: stretch;
+}
+.dbwrite__input {
+  flex: 1;
+  resize: vertical;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  color: var(--text);
+  font-family: inherit;
+  font-size: 14px;
+  line-height: 1.4;
+}
+.dbwrite__input:focus {
+  outline: none;
+  border-color: var(--accent);
+}
+.dbwrite__plan {
+  align-self: flex-end;
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #1a1206;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 8px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+}
+.dbwrite__plan:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.dbwrite__decline {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.dbwrite__error {
+  margin: 12px 0 0;
+  font-size: 13px;
+  color: var(--inc);
+}
+.dbwrite__preview {
+  margin-top: 14px;
+  padding-top: 14px;
+  border-top: 1px dashed var(--border);
+}
+.dbwrite__previewhead {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+.dbwrite__tool {
+  font-family: var(--mono);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 6px;
+}
+.dbwrite__tool.is-write {
+  color: var(--accent);
+  background: rgba(240, 136, 62, 0.1);
+  border: 1px solid rgba(240, 136, 62, 0.35);
+}
+.dbwrite__tool.is-read {
+  color: var(--graph);
+  background: rgba(87, 171, 90, 0.1);
+  border: 1px solid rgba(87, 171, 90, 0.3);
+}
+.dbwrite__toolkind {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+.dbwrite__explain {
+  margin: 10px 0 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.dbwrite__sql {
+  margin: 10px 0 0;
+  padding: 10px 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font-family: var(--mono);
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+.dbwrite__argkey {
+  color: var(--text-faint);
+}
+.dbwrite__actions {
+  display: flex;
+  gap: 10px;
+  margin-top: 12px;
+}
+.dbwrite__run {
+  background: var(--accent);
+  border: 1px solid var(--accent);
+  color: #1a1206;
+  font-weight: 600;
+  font-size: 13px;
+  padding: 7px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.dbwrite__run:disabled {
+  opacity: 0.5;
+  cursor: default;
+}
+.dbwrite__cancel {
+  background: transparent;
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  font-size: 13px;
+  padding: 7px 16px;
+  border-radius: 8px;
+  cursor: pointer;
+}
+.dbwrite__cancel:hover {
+  border-color: var(--accent);
+}
+.dbwrite__result {
+  margin-top: 12px;
+  padding: 12px;
+  border-radius: 8px;
+  font-size: 13px;
+}
+.dbwrite__result.is-ok {
+  background: rgba(87, 171, 90, 0.08);
+  border: 1px solid rgba(87, 171, 90, 0.3);
+  color: var(--graph);
+}
+.dbwrite__result.is-err {
+  background: rgba(229, 83, 75, 0.08);
+  border: 1px solid rgba(229, 83, 75, 0.4);
+  color: var(--inc);
+}
+.dbwrite__result pre {
+  margin: 8px 0;
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: pre-wrap;
+  overflow-x: auto;
+}
+
+/* CLI panel — the real ccloud terminal (xterm.js over a PTY WebSocket) */
+.cli {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+}
+.cli__head {
+  flex: 0 0 auto;
+}
+.cli__head h2 {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin: 0 0 4px;
+}
+.cli__via {
+  font-family: var(--mono);
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--accent);
+  border: 1px solid rgba(240, 136, 62, 0.45);
+  background: rgba(240, 136, 62, 0.08);
+  border-radius: 6px;
+  padding: 2px 8px;
+}
+.cli__sub {
+  margin: 0 0 12px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+.cli__sub code,
+.cli__mock code,
+.cli__fact code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+  background: rgba(240, 136, 62, 0.08);
+  border-radius: 4px;
+  padding: 1px 5px;
+}
+.cli__banner {
+  flex: 0 0 auto;
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  padding: 8px 12px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+.cli__conn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-weight: 600;
+}
+.cli__dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  display: inline-block;
+}
+.cli__dot--ok {
+  background: var(--graph);
+  box-shadow: 0 0 6px rgba(87, 171, 90, 0.7);
+}
+.cli__dot--err {
+  background: var(--inc);
+}
+.cli__dot--wait {
+  background: var(--accent);
+}
+.cli__fact {
+  font-family: var(--mono);
+}
+.cli__fact--warn {
+  color: var(--inc);
+}
+.cli__fact--dim {
+  color: var(--text-faint);
+}
+.cli__termwrap {
+  flex: 1 1 auto;
+  min-height: 0;
+  background: #0b0f14;
+  border: 1px solid var(--border);
+  border-radius: 0 0 10px 10px;
+  padding: 8px 10px;
+  overflow: hidden;
+}
+.cli__term {
+  width: 100%;
+  height: 100%;
+}
+.cli__mock {
+  flex: 0 0 auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 16px 18px;
+  color: var(--text-dim);
+  font-size: 14px;
+}
+.cli__mock strong {
+  color: var(--text);
+}

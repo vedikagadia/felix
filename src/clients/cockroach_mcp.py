@@ -267,6 +267,89 @@ def fetch_overview() -> dict[str, Any]:
     return asyncio.run(_run())
 
 
+# ── natural-language write path (DB overview "ask felix to change the DB") ────
+# The tools the NL box may plan/execute, with the arg contract discovered by
+# probing the live server (the arg key differs per tool: create_table takes
+# `ddl`, insert_rows/select_query take `query`, create_database takes `name`).
+# This is the ONLY set /db/execute will run — a strict allowlist. Note the server
+# itself exposes no drop/truncate/update/delete tool, so every write here is
+# ADDITIVE (create or insert); the worst case is a new table or extra rows.
+NL_TOOL_CATALOG: tuple[dict[str, Any], ...] = (
+    {
+        "name": "create_table",
+        "write": True,
+        "arg": "ddl",
+        "hint": "a single CREATE TABLE DDL statement. MUST fully-qualify the table name as "
+        "`defaultdb.public.<name>` — the MCP session's current database is `system`, which "
+        "this user cannot write to.",
+    },
+    {
+        "name": "create_database",
+        "write": True,
+        "arg": "name",
+        "hint": "the name of the new database (identifier only, not a full statement).",
+    },
+    {
+        "name": "insert_rows",
+        "write": True,
+        "arg": "query",
+        "hint": "a single INSERT statement (INSERT INTO ... VALUES ... or INSERT INTO ... SELECT). "
+        "MUST fully-qualify the table as `defaultdb.public.<name>` (the session's current database "
+        "is `system`, not writable).",
+    },
+    {
+        "name": "select_query",
+        "write": False,
+        "arg": "query",
+        "hint": "a single read-only SELECT (the server auto-appends LIMIT 25 if absent). "
+        "Fully-qualify tables as `defaultdb.public.<name>` — the current database is `system`.",
+    },
+)
+NL_TOOLS = {t["name"]: t for t in NL_TOOL_CATALOG}
+
+
+def _flatten_error(exc: BaseException) -> str:
+    """Render an exception as a readable message, unwrapping anyio/TaskGroup
+    ExceptionGroups to the real leaf error(s). The MCP streamable-HTTP client runs
+    inside a task group, so an error raised deep in a tool call surfaces as
+    'unhandled errors in a TaskGroup (1 sub-exception)' unless we dig it out."""
+    subs = getattr(exc, "exceptions", None)
+    if subs:  # BaseExceptionGroup (py3.11+): recurse into the leaves
+        return "; ".join(_flatten_error(sub) for sub in subs)
+    text = str(exc).strip()
+    return text or type(exc).__name__
+
+
+def run_tool(tool: str, args: dict[str, Any]) -> dict[str, Any]:
+    """Execute ONE allowlisted NL tool against the cluster over MCP (synchronous,
+    for the threadpool-run API route). Returns {ok, tool, args, result} on success
+    or {ok:false, tool, args, error} on an MCP/validation error — never raises for
+    a tool-level failure, so the caller can show the message and let the operator
+    retry. Rejects any tool outside NL_TOOLS."""
+    if tool not in NL_TOOLS:
+        return {"ok": False, "tool": tool, "args": args, "error": f"tool {tool!r} is not permitted"}
+
+    import asyncio
+
+    async def _run() -> dict[str, Any]:
+        async with connect() as session:
+            # Catch the tool error HERE, inside the session — if it escaped the
+            # `async with`, the streamable-HTTP task group would wrap it in an
+            # opaque ExceptionGroup ("unhandled errors in a TaskGroup").
+            try:
+                result = await call_tool(session, tool, args)
+            except Exception as e:  # noqa: BLE001 - a tool-level failure is data, not a crash
+                return {"ok": False, "tool": tool, "args": args, "error": _flatten_error(e)}
+            if getattr(result, "is_error", False):
+                return {"ok": False, "tool": tool, "args": args, "error": _content_json(result)}
+            return {"ok": True, "tool": tool, "args": args, "result": _content_json(result)}
+
+    try:
+        return asyncio.run(_run())
+    except BaseException as e:  # noqa: BLE001 - connection/teardown errors → readable text
+        return {"ok": False, "tool": tool, "args": args, "error": _flatten_error(e)}
+
+
 if __name__ == "__main__":
     import asyncio
 

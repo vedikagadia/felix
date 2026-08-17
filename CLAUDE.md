@@ -30,8 +30,10 @@ header). The **DB overview** page (`GET /db/overview`) is powered entirely by
 read-only MCP tool calls (`get_cluster` / `list_databases` / `list_tables` /
 `show_running_queries`) — no direct SQL on that path. So the two named CockroachDB
 offerings felix uses (vector indexing + the Managed MCP Server) are both
-verified running; the recursive-CTE graph trace and the CDC changefeed are
-additional CockroachDB capabilities on top, not the counted offerings.
+verified running; the recursive-CTE graph trace, the CDC changefeed, and the
+**ccloud CLI (Agent-Ready)** — surfaced as a real interactive terminal in the
+"CLI" panel (see below) — are additional CockroachDB capabilities on top, not
+the counted offerings.
 
 This is a **personal project** on the `vedikagadia` GitHub account. Commit as
 Vedika Gadia / the vedikagadia noreply email. **Never commit under a Salesforce
@@ -82,7 +84,7 @@ src/                  # layered: cli/api -> service -> clients/store -> models/c
   service/
     evidence_gatherer.py # EvidenceGatherer(conn, embedder) -> EvidencePacket (retrieval half of the loop)
     diagnoser.py      # IncidentDiagnoser: respond(session_id?) -> DiagnosisResult (reason + write-back, multi-turn aware); respond_stream() = SSE generator twin; diagnose() returns just the Diagnosis
-  api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /chat/stream [SSE], /recall, /incidents, /incidents/search, /incidents/{id}/feedback, /metrics/config, /metrics/recent, /metrics/stream [SSE, CDC-backed], /db/overview [via CockroachDB MCP], /alerts, /sessions/{id}, /health), schemas.py (serialize to the frontend contract)
+  api/                # HTTP driver over the service layer (FastAPI): app.py (/chat, /chat/stream [SSE], /recall, /incidents, /incidents/search, /incidents/{id}/feedback, /metrics/config, /metrics/recent, /metrics/stream [SSE, CDC-backed], /db/overview + /db/plan + /db/execute [via CockroachDB MCP], /cli/status + /cli/ws [WebSocket PTY — see terminal.py], /alerts, /sessions/{id}, /health), schemas.py (serialize to the frontend contract), terminal.py (PTY-over-WebSocket bridge for the CLI panel)
   seed/
     parser.py         # AST -> code graph (42 nodes / 22 edges), deterministic uuid5 ids
     loader.py         # Seeder: parse + embed + insert -> the integration seam
@@ -340,6 +342,75 @@ demonstration that felix *uses* the Managed MCP Server (not just Claude Code).
   writing: get_cluster, list/create databases + tables, select_query,
   insert_rows, explain_query, show_running_queries, show_statement, …). Run it
   once to complete the OAuth consent that seeds the token cache.
+
+### Natural-language DB writes ("Ask felix to change the DB")
+
+The DB-overview panel also has a text box that turns a plain-English request
+("add a table for on-call schedules") into a real CockroachDB write, executed
+over MCP — **preview-then-confirm**, so nothing runs until the operator OKs the
+exact tool call.
+
+- **The planner** (`src/service/db_assistant.py`, `plan_operation(llm,
+  instruction)`): felix's LLM has no native tool-calling, so this prompts it (with
+  the tool menu from `cockroach_mcp.NL_TOOL_CATALOG`) to emit strict JSON, parses
+  it defensively (fenced block → outermost `{...}`, never raises — mirrors the
+  diagnoser's `_extract_json_object`), validates the chosen tool against
+  `NL_TOOLS`, and coerces the value into the single arg key that tool expects.
+  Returns a reviewable `{tool, args, explanation, write}` or `{tool:null, reason}`.
+- **The allowlist** (`cockroach_mcp.NL_TOOL_CATALOG` / `NL_TOOLS`): only
+  `create_table` / `create_database` / `insert_rows` (writes) + `select_query`
+  (read). The server exposes **no** drop/truncate/update/delete tool, so every
+  write is **additive** — worst case is a new table or extra rows. Arg contract
+  discovered by probing live (the key differs per tool): `create_table` takes
+  `{ddl}`, `insert_rows`/`select_query` take `{query}`, `create_database` takes
+  `{name}`. The MCP session's current database is `system` (not writable by the
+  `managed-mcp` user), so the planner is told to **fully-qualify** every table as
+  `defaultdb.public.<name>` and to emit `CREATE TABLE IF NOT EXISTS` (idempotent,
+  so a retry after a transient server "Internal error" is safe). `run_tool`
+  unwraps anyio `TaskGroup` ExceptionGroups so the operator sees the real MCP
+  error, not "unhandled errors in a TaskGroup".
+- **The endpoints**: `POST /db/plan {instruction}` → `{plan}` or `{plan:null,
+  reason}` (maps only; **never executes**; 503 if LLM or MCP unconfigured).
+  `POST /db/execute {tool, args}` → re-validates `tool ∈ NL_TOOLS` (403 otherwise)
+  then `cockroach_mcp.run_tool` runs it over MCP, returning `{ok, tool, args,
+  result|error}` (tool-level failure stays HTTP 200 so the panel can show it).
+- **The UI** (`DbWriteBox` in `DbOverviewPage.tsx`): textarea → **Plan it** →
+  previews the tool + SQL + explanation → **Run it** / **Cancel** → shows the raw
+  MCP result and refreshes the overview so a new table/rows appear. Seam funcs
+  `planDbOperation` / `executeDbOperation` in `api/db.ts` (mock mode does a
+  keyword stand-in for the planner and a no-op execute).
+
+## CLI panel (the interactive ccloud terminal)
+
+felix's third named CockroachDB offering made tangible: a **real interactive
+terminal** in the UI wired to the **ccloud CLI (Agent-Ready)**. The backend
+spawns a login shell in a PTY with `ccloud` on PATH and bridges it to an
+xterm.js terminal in the browser, so `ccloud cluster list`, `ccloud cluster sql
+felix-db`, etc. run for real against the authed Cloud account.
+
+- **The PTY bridge** (`src/api/terminal.py`, `run_terminal(ws)`): `pty.fork()`s a
+  login shell (`$SHELL`, overridable via `FELIX_CLI_SHELL`), sets `TERM=xterm-256color`,
+  and bridges the master fd ↔ WebSocket. Client→server frames are JSON
+  (`{"type":"input","data"}` keystrokes, `{"type":"resize","cols","rows"}` →
+  `TIOCSWINSZ`); server→client frames are raw output bytes. A single queue-drained
+  sender preserves byte order; on either side closing it removes the reader,
+  SIGHUPs + reaps the shell, and closes the socket.
+- **Security**: this is a FULL SHELL over the socket (the operator explicitly
+  chose the interactive-terminal option), i.e. effectively RCE. It's gated behind
+  `FELIX_CLI_ENABLED` (Settings.cli_enabled, default true) and the API binds
+  `127.0.0.1` by default (`serve`). **Never expose this on a public interface.**
+- **The endpoints**: `WS /cli/ws` (the terminal) and `GET /cli/status` →
+  `{enabled, ccloud_installed, ccloud_path, account, cluster_id}` (introspection
+  for the panel banner — runs `ccloud auth whoami`; spawns no shell).
+- **The panel** (`frontend/src/components/CliPage.tsx`, "CLI" nav tab): an
+  xterm.js terminal (+ FitAddon, ResizeObserver-driven resize) over a native
+  `WebSocket`; a status banner shows connection state + which Cloud account
+  ccloud is authed as. Seam is `frontend/src/api/cli.ts` (`cliWsUrl()` derives
+  ws(s):// from `VITE_API_URL`; `fetchCliStatus()`); no meaningful mock — a
+  terminal needs a real host, so mock mode renders an explanatory placeholder.
+  Requires `@xterm/xterm` + `@xterm/addon-fit` (added to frontend deps).
+- **Prereq**: `brew install cockroachdb/tap/ccloud` then `ccloud auth login`
+  (browser, one-time) — the backend inherits that session.
 
 ## Live monitoring (CDC — observe services in real time)
 
