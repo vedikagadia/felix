@@ -19,6 +19,7 @@ from __future__ import annotations
 import json
 import logging
 import statistics
+import threading
 from collections import deque
 from math import ceil
 from typing import Sequence
@@ -71,7 +72,12 @@ class MetricWatcher:
         firing a diagnosis on a trip. Blocks until the caller interrupts it."""
         with self.conn.cursor() as cur:
             # Idempotent; harmless if the setting is already on (it is locally).
-            cur.execute("SET CLUSTER SETTING kv.rangefeed.enabled = true")
+            # A managed Cloud cluster may forbid or pre-manage it — the feed still
+            # works if rangefeed is enabled cluster-wide, so log and continue.
+            try:
+                cur.execute("SET CLUSTER SETTING kv.rangefeed.enabled = true")
+            except psycopg.Error as exc:
+                log.warning("could not set kv.rangefeed.enabled (assuming managed): %s", exc)
 
         self._backfill()
 
@@ -185,3 +191,83 @@ class MetricWatcher:
         small (<= WINDOW)."""
         ordered = sorted(window)
         return ordered[min(len(ordered) - 1, ceil(0.99 * len(ordered)) - 1)]
+
+
+# ── wiring: build a watcher over its own connections ──────────────────────────
+
+
+def build_watcher(
+    conn: psycopg.Connection, stream_conn: psycopg.Connection
+) -> MetricWatcher:
+    """Assemble a MetricWatcher + its diagnoser over the two supplied
+    connections. Shared by the CLI (`python -m src watch`) and the in-process
+    background runner so the wiring lives in exactly one place.
+
+    `conn` runs the cooldown check + diagnoser write-back; `stream_conn` holds
+    ONLY the changefeed portal (psycopg forbids a concurrent op on it) — the
+    caller owns both connections' lifetimes.
+    """
+    from ..clients.llm import get_llm
+    from ..store.repositories import (
+        ActionRepository,
+        ActiveIncidentRepository,
+        IncidentRepository,
+    )
+    from .evidence_gatherer import EvidenceGatherer
+
+    diagnoser = IncidentDiagnoser(
+        EvidenceGatherer(conn),
+        get_llm(),
+        IncidentRepository(conn),
+        ActionRepository(conn),
+        ActiveIncidentRepository(conn),
+    )
+    return MetricWatcher(conn, stream_conn, MetricRepository(conn), diagnoser)
+
+
+class BackgroundWatcher:
+    """Runs a MetricWatcher on a daemon thread inside another process (the API
+    `serve` process — see the merged web+watch task in DEPLOY.md §4).
+
+    It owns its OWN two DB connections, separate from the API's per-request
+    pool: the changefeed is a long-lived server-side portal that must not touch
+    a request-scoped connection. The embedding model, however, IS shared with
+    the API — `get_embedder()` is a process singleton — which is the whole point
+    of merging (one ~4GB task instead of two).
+
+    Best-effort and self-contained: a failure opening connections or a crash in
+    the stream loop is logged, not raised, so it can never take the web server
+    down. `stop()` closes the changefeed and both connections for a clean
+    task-stop on SIGTERM.
+    """
+
+    def __init__(self) -> None:
+        self._conn: psycopg.Connection | None = None
+        self._stream_conn: psycopg.Connection | None = None
+        self._thread = threading.Thread(
+            target=self._run, name="cdc-watcher", daemon=True
+        )
+
+    def start(self) -> None:
+        self._thread.start()
+
+    def _run(self) -> None:
+        from ..store.connection import get_conn
+
+        try:
+            self._conn = get_conn()
+            self._stream_conn = get_conn()
+            build_watcher(self._conn, self._stream_conn).run()
+        except Exception:  # noqa: BLE001 — the watcher must never crash the web server
+            log.exception("background watcher stopped (web server continues)")
+
+    def stop(self) -> None:
+        # Closing stream_conn unblocks the `cur.stream(...)` loop; both closes
+        # are best-effort so shutdown proceeds even if one already died.
+        for c in (self._stream_conn, self._conn):
+            if c is not None:
+                try:
+                    c.close()
+                except Exception:  # noqa: BLE001 — teardown must not raise
+                    pass
+        self._thread.join(timeout=5)

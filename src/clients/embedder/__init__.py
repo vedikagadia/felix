@@ -13,6 +13,7 @@ the local model at *import* time — those are constructed on first use.
 from __future__ import annotations
 
 from abc import ABC, abstractmethod
+from functools import lru_cache
 
 from ...config import get_settings
 
@@ -36,12 +37,23 @@ class Embedder(ABC):
         return [self.embed(t) for t in texts]
 
 
+@lru_cache(maxsize=None)
 def get_embedder(provider: str | None = None) -> Embedder:
     """Construct the configured Embedder. `provider` overrides Settings if given.
+
+    Process-wide singleton, keyed by the resolved provider: the local bge-large
+    model is ~1.5GB in memory, so every caller (each API request, the seed
+    loader, the in-process CDC watcher) must share ONE instance. This is what
+    lets `serve` run the watcher in a background thread without doubling RAM —
+    see the merged-task deploy in DEPLOY.md §4.
 
     Raises ValueError for anything other than 'titan' or 'local'.
     """
     provider = (provider or get_settings().embed_provider).strip().lower()
+    return _build_embedder(provider)
+
+
+def _build_embedder(provider: str) -> Embedder:
     if provider == "titan":
         from .titan import TitanEmbedder
 

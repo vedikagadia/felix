@@ -13,7 +13,9 @@ Run it with `python -m src serve` (see cli.py) or, for autoreload during dev:
 from __future__ import annotations
 
 import json
+import logging
 import os
+from contextlib import asynccontextmanager
 
 from fastapi import Depends, FastAPI, HTTPException, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
@@ -36,6 +38,37 @@ from .schemas import (
 # (`no_initial_scan`); the panel seeds history from GET /metrics/recent. Same
 # feed the watcher uses, but this consumer only relays rows to the browser.
 _METRICS_CHANGEFEED_SQL = "EXPERIMENTAL CHANGEFEED FOR metrics WITH updated, no_initial_scan"
+
+
+log = logging.getLogger(__name__)
+
+
+def _watcher_enabled() -> bool:
+    """Run the CDC watcher in-process? Off by default (local `serve` is a plain
+    API). The merged web+watch deploy sets FELIX_RUN_WATCHER=1 so one process —
+    and one shared embedding model — serves the API AND holds the changefeed
+    (DEPLOY.md §4). Standalone `python -m src watch` is unaffected."""
+    return os.environ.get("FELIX_RUN_WATCHER", "").strip().lower() in ("1", "true", "yes")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Optionally start the CDC watcher on a background thread for the lifetime
+    of the server. It shares the process embedder but owns its own DB
+    connections; on shutdown (SIGTERM from Fargate) it's torn down cleanly."""
+    watcher = None
+    if _watcher_enabled():
+        from ..service.watcher import BackgroundWatcher
+
+        log.info("FELIX_RUN_WATCHER set — starting in-process CDC watcher")
+        watcher = BackgroundWatcher()
+        watcher.start()
+    try:
+        yield
+    finally:
+        if watcher is not None:
+            log.info("stopping in-process CDC watcher")
+            watcher.stop()
 
 
 def _sse(event: str, data: dict) -> str:
@@ -96,6 +129,7 @@ def create_app() -> FastAPI:
         title="felix",
         description="SRE incident-memory agent — HTTP API over the recall + reasoning loop.",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     # CORS: allow the Vite dev origin(s). Override with FELIX_CORS_ORIGINS
