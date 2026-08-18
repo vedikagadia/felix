@@ -1,0 +1,55 @@
+[
+  {
+    "id": "rb-0001",
+    "title": "db.pool.exhausted during traffic spikes — connection held across payment retries",
+    "service": "connection-pool",
+    "tags": ["connection-pool", "db-pool-exhausted", "traffic-spike", "checkout", "payment-retries"],
+    "symptoms": "During traffic spikes checkout requests fail with `db.pool.exhausted in_use=10 size=10` and `checkout.payment_failed order_id=... err=ConnectionPoolExhausted`. The database's own connection count sits well below its ceiling and scaling the DB does not help. Root cause is CheckoutHandler.process holding a ConnectionPool.acquire() connection across the whole PaymentClient.charge() retry loop, so slow-gateway retries drain DB_POOL_SIZE=10 under load.",
+    "steps": [
+      {"step_order": 1, "action": "Confirm the exhaustion signal and that in_use has reached size", "command": "grep 'db.pool.exhausted' checkout-handler.log", "outcome": "Repeated db.pool.exhausted in_use=10 size=10 during the spike window confirms pool drain, not a DB outage"},
+      {"step_order": 2, "action": "Rule out real database capacity limits before treating it as a DB problem", "command": null, "outcome": "Database-side connection count is far below its ceiling — the application pool is the constraint"},
+      {"step_order": 3, "action": "Trace the connection's lifetime in code: CheckoutHandler.process acquires ConnectionPool.acquire() and holds it across PaymentClient.charge()", "command": null, "outcome": "Confirms the connection is held through PAYMENT_MAX_RETRIES=8 exponential-backoff attempts when the gateway is slow"},
+      {"step_order": 4, "action": "Move the acquire/release in checkout.py to wrap only the DB work, not the payment call (acquire after charge, or use a separate short-lived connection)", "command": null, "outcome": "The scarce pool connection is no longer tied up across gateway retries; the pool stops draining under load"},
+      {"step_order": 5, "action": "Optionally lower PAYMENT_MAX_RETRIES to cap worst-case hold time as a stopgap", "command": "edit config.py: PAYMENT_MAX_RETRIES = 4", "outcome": "Bounds how long a slow charge can hold a connection while the code fix ships"}
+    ]
+  },
+  {
+    "id": "rb-0002",
+    "title": "Slow checkout, dashboards green — latency aggregation switched to avg",
+    "service": "checkout-handler",
+    "tags": ["latency", "metrics", "dashboards-green", "p99", "observability"],
+    "symptoms": "Customers report checkout 'taking forever' but the checkout latency dashboard stays green and no alert fires. `metrics.latency name=checkout.duration agg=avg` looks nominal and CheckoutAPI.get_health passes throughout. The tail is hidden because a recent merge changed metrics.py LATENCY_AGGREGATION from p99 to avg, so p99-based SLO alerts went blind.",
+    "steps": [
+      {"step_order": 1, "action": "Check the aggregation on the metrics.latency line for the affected window", "command": "grep 'metrics.latency name=checkout.duration' checkout-handler.log", "outcome": "Confirms agg=avg rather than agg=p99 — the mean is masking tail latency"},
+      {"step_order": 2, "action": "Correlate against recent merges to metrics.py for a change to LATENCY_AGGREGATION", "command": null, "outcome": "Identifies the merge that switched LATENCY_AGGREGATION from 'p99' to 'avg' as the cause of the blind dashboard"},
+      {"step_order": 3, "action": "Revert LATENCY_AGGREGATION to p99 in metrics.py", "command": "edit metrics.py: LATENCY_AGGREGATION = \"p99\"", "outcome": "checkout.duration reports the tail again; the latency dashboard and alert regain visibility"},
+      {"step_order": 4, "action": "Add a test asserting SLO metrics aggregate on p99 so the aggregation cannot silently regress again", "command": null, "outcome": "Future merges that flip an SLO metric to avg fail CI before reaching production"}
+    ]
+  },
+  {
+    "id": "rb-0003",
+    "title": "payment.retry storm — gateway timeouts exhausting all attempts",
+    "service": "payment-gateway",
+    "tags": ["payment-gateway", "retry-storm", "payment-retry", "gateway-timeout"],
+    "symptoms": "An elevated `checkout.payment_failed` rate pages on-call. Logs show `payment.retry order_id=... attempt=n/8 backoff=...s` climbing through all attempts, then `payment.exhausted order_id=... attempts=8` and `checkout.payment_failed order_id=... err=GatewayTimeout`. PaymentClient._call_gateway is exceeding PAYMENT_GATEWAY_TIMEOUT_SECONDS on a large fraction of calls.",
+    "steps": [
+      {"step_order": 1, "action": "Confirm the retry storm and where it terminates", "command": "grep 'payment.exhausted' checkout-handler.log", "outcome": "payment.retry climbing to attempt=8/8 then payment.exhausted attempts=8 confirms PaymentClient.charge is exhausting PAYMENT_MAX_RETRIES"},
+      {"step_order": 2, "action": "Determine whether GatewayTimeout is provider-wide or isolated to one AZ", "command": null, "outcome": "Global impact points at a provider outage; single-AZ concentration points at a network/ACL regression instead"},
+      {"step_order": 3, "action": "If provider-wide, communicate the outage to support and monitor payment.retry / payment.exhausted until the provider recovers", "command": null, "outcome": "Reduces duplicate tickets and confirms recovery when payment.retry volume returns to baseline"},
+      {"step_order": 4, "action": "Verify backoff spacing is correct so retries are not amplifying load on the degraded gateway", "command": "grep 'config.loaded' checkout-handler.log", "outcome": "Confirms PAYMENT_BASE_DELAY_SECONDS=0.5 (not a too-low value that would hammer the gateway between attempts)"}
+    ]
+  },
+  {
+    "id": "rb-0004",
+    "title": "fulfillment.queue.full — orders backing up, queue not draining",
+    "service": "fulfillment-queue",
+    "tags": ["fulfillment-queue", "queue-full", "capacity", "downstream"],
+    "symptoms": "`fulfillment.enqueued order_id=... depth=...` climbs steadily until `fulfillment.queue.full depth=5000 max=5000`, followed by `checkout.enqueue_failed order_id=... err=QueueFull`. Checkout and payment succeed but FulfillmentQueue.enqueue fails because the downstream fulfillment-worker consumer is not draining fast enough (under-scaled) or not at all (crashed).",
+    "steps": [
+      {"step_order": 1, "action": "Check the fulfillment-worker consumer's pod status", "command": "kubectl get pods -l app=fulfillment-worker", "outcome": "0 Ready pods means a crashed consumer (zero drain); healthy-but-behind means under-scaling"},
+      {"step_order": 2, "action": "If the consumer is down, restart the fulfillment-worker deployment", "command": "kubectl rollout restart deployment fulfillment-worker", "outcome": "Consumer comes back healthy and the queue begins draining immediately"},
+      {"step_order": 3, "action": "If the consumer is merely behind, scale it up to exceed FulfillmentQueue.enqueue's arrival rate", "command": "kubectl scale deployment fulfillment-worker --replicas=12", "outcome": "Consumption rate exceeds arrival rate; queue depth drains back toward baseline"},
+      {"step_order": 4, "action": "Watch FulfillmentQueue.depth() until it returns to near-zero baseline", "command": null, "outcome": "Confirms full recovery with no checkout.enqueue_failed errors; queued orders were held, not dropped"}
+    ]
+  }
+]

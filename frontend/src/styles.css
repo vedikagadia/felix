@@ -657,6 +657,20 @@ body {
 .evidence__body h3 {
   margin: 0 0 16px;
   font-size: 15px;
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+}
+
+.evidence__ranked {
+  font-size: 10px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--accent);
+  border: 1px solid var(--accent-dim);
+  border-radius: 999px;
+  padding: 1px 8px;
 }
 
 .dot {
@@ -678,6 +692,9 @@ body {
 }
 .dot--graph {
   background: var(--graph);
+}
+.dot--metric {
+  background: var(--inc);
 }
 
 .evsec {
@@ -728,6 +745,48 @@ body {
 .card--cited {
   border-color: var(--cite);
   box-shadow: 0 0 0 1px var(--cite) inset;
+}
+
+/* A breached downstream health check — the live-metric-querying proof. */
+.card--breach {
+  border-color: var(--inc);
+  box-shadow: 0 0 0 1px var(--inc) inset;
+}
+
+.tag--breach {
+  background: var(--inc);
+  color: #fff;
+}
+
+.nh__reading {
+  display: flex;
+  align-items: baseline;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 8px 0 0;
+  font-family: var(--mono);
+}
+
+.nh__observed {
+  font-size: 18px;
+  font-weight: 700;
+  color: var(--inc);
+}
+
+.nh__cmp {
+  color: var(--text-faint);
+}
+
+.nh__threshold {
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.nh__label {
+  flex-basis: 100%;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  font-size: 11px;
+  color: var(--text-faint);
 }
 
 .card__head {
@@ -1985,4 +2044,243 @@ body {
 }
 .cli__mock strong {
   color: var(--text);
+}
+
+/* ── reasoning-replay overlay ─────────────────────────────────────────────── */
+
+.replay {
+  position: fixed;
+  inset: 0;
+  z-index: 50;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(5, 8, 12, 0.72);
+  backdrop-filter: blur(3px);
+  animation: replay-in 260ms ease-out;
+}
+
+.replay--leaving {
+  animation: replay-out 420ms ease-in forwards;
+  pointer-events: none;
+}
+
+@keyframes replay-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes replay-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+.replay__card {
+  width: min(640px, 92vw);
+  max-height: 86vh;
+  overflow: auto;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 24px 80px rgba(0, 0, 0, 0.55);
+  padding: 22px 24px 18px;
+}
+
+.replay__head {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+}
+
+.replay__logo {
+  font-size: 26px;
+  line-height: 1;
+}
+
+.replay__head h3 {
+  margin: 0;
+  font-size: 16px;
+}
+
+.replay__alert {
+  margin: 2px 0 0;
+  color: var(--text-dim);
+  font-size: 13px;
+  max-width: 46ch;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.replay__skip {
+  margin-left: auto;
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  color: var(--text-dim);
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+
+.replay__skip:hover {
+  color: var(--text);
+  border-color: var(--text-faint);
+}
+
+.replay__stages {
+  list-style: none;
+  margin: 20px 0 8px;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.replay__stage {
+  display: flex;
+  gap: 12px;
+  padding: 12px 10px;
+  border-radius: 10px;
+  transition:
+    opacity 300ms ease,
+    background 300ms ease;
+}
+
+.replay__stage--pending {
+  opacity: 0.32;
+}
+
+.replay__stage--active {
+  background: var(--bg-elev2);
+  opacity: 1;
+}
+
+.replay__stage--done {
+  opacity: 0.85;
+}
+
+.replay__marker {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  padding-top: 3px;
+}
+
+.replay__stage--active .dot {
+  box-shadow: 0 0 0 0 rgba(240, 136, 62, 0.6);
+  animation: replay-pulse 1.2s ease-out infinite;
+}
+
+@keyframes replay-pulse {
+  0% {
+    box-shadow: 0 0 0 0 rgba(240, 136, 62, 0.5);
+  }
+  70% {
+    box-shadow: 0 0 0 7px rgba(240, 136, 62, 0);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(240, 136, 62, 0);
+  }
+}
+
+.replay__stagebody {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+
+.replay__label {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.replay__spinner {
+  font-size: 12px;
+  color: var(--text-faint);
+  font-style: italic;
+}
+
+.replay__chips,
+.replay__trace {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px;
+  animation: replay-detail 320ms ease-out;
+}
+
+@keyframes replay-detail {
+  from {
+    opacity: 0;
+    transform: translateY(3px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+
+.replay__chip {
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  padding: 2px 10px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.replay__chip--none {
+  font-style: italic;
+  color: var(--text-faint);
+}
+
+.replay__chip--breach {
+  border-color: var(--inc);
+  color: var(--inc);
+  font-family: var(--mono);
+  font-size: 11px;
+}
+
+.replay__chip--cite {
+  border-color: var(--cite);
+  color: var(--cite);
+}
+
+.replay__tracenode {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.replay__tracenode code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text);
+  background: var(--bg-elev2);
+  border-radius: 6px;
+  padding: 2px 7px;
+}
+
+.replay__arrow {
+  color: var(--text-faint);
+}
+
+.replay__foot {
+  margin-top: 12px;
+  padding-top: 12px;
+  border-top: 1px solid var(--border);
+  font-size: 12px;
+  color: var(--text-faint);
+  text-align: center;
 }

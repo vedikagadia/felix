@@ -19,6 +19,7 @@ from typing import Any
 
 from ..clients.llm import LLMClient
 from ..models import (
+    EVIDENCE_CLASSES,
     ActiveIncidentTurn,
     AgentResponse,
     Diagnosis,
@@ -68,14 +69,16 @@ _DIAGNOSIS_SCHEMA = """{
   ],
   "cited_incident_ids": ["...ids copied verbatim from the 'id:' fields above..."],
   "cited_change_ids": ["...ids copied verbatim from the 'id:' fields above..."],
-  "confidence": 0.0
+  "confidence": 0.0,
+  "evidence_order": ["rank the evidence CLASSES you were shown from MOST to LEAST useful for THIS diagnosis, using only these names: incidents, docs, changes, topology_health, upstream, runbooks. Include only classes that were actually present and helped; omit ones that were empty or irrelevant."]
 }"""
 
 _MESSAGE_SCHEMA = """{
   "type": "message",
   "text": "a direct, conversational answer in GitHub-flavored Markdown (use a fenced code block for any command)",
   "cited_incident_ids": ["...ids copied verbatim from the 'id:' fields above, if any..."],
-  "cited_change_ids": ["...ids copied verbatim from the 'id:' fields above, if any..."]
+  "cited_change_ids": ["...ids copied verbatim from the 'id:' fields above, if any..."],
+  "evidence_order": ["rank the evidence CLASSES you actually used to answer, MOST to LEAST useful, using only these names: incidents, docs, changes, topology_health, upstream, runbooks. Omit any that were empty or irrelevant."]
 }"""
 
 # First turn (a fresh alert): always a full diagnosis.
@@ -468,6 +471,30 @@ class IncidentDiagnoser:
                 sections.append(f"  source:\n{src}")
         sections.append("")
 
+        # Live-metric correlation — only rendered when something actually
+        # breached, so a healthy topology (or an alert about no known service)
+        # adds nothing to the prompt.
+        if packet.topology_health:
+            sections.append("## Live downstream health (breached checks right now)")
+            for nh in packet.topology_health:
+                sections.append(
+                    f"- {nh.service}: {nh.intent}({nh.metric}) = {nh.observed:.1f} "
+                    f">= {nh.threshold:.1f} over {nh.sample_count} samples — BREACHED"
+                )
+            sections.append("")
+
+        # Curated runbooks — authored procedure recalled by the alert text. Only
+        # rendered when at least one was recalled.
+        if packet.runbooks:
+            sections.append("## Relevant runbooks (curated procedure)")
+            for r in packet.runbooks:
+                rb = r.item
+                sections.append(f"- distance: {r.distance:.3f}  {rb.title}")
+                for step in rb.steps:
+                    cmd = f"  `{step.command}`" if step.command else ""
+                    sections.append(f"  {step.step_order}. {step.action}{cmd}")
+            sections.append("")
+
         # First turn → force a full diagnosis. Follow-up → let the model choose
         # a conversational message (default) or a re-diagnosis.
         sections.append(_FOLLOW_UP_HINT if history else _FIRST_TURN_HINT)
@@ -530,6 +557,7 @@ class IncidentDiagnoser:
             text=text,
             cited_incident_ids=cited_incidents,
             cited_change_ids=cited_changes,
+            evidence_order=self._parse_evidence_order(obj),
         )
 
     def _build_diagnosis(self, obj: dict, packet: EvidencePacket, text: str) -> Diagnosis:
@@ -560,7 +588,24 @@ class IncidentDiagnoser:
             cited_incident_ids=cited_incidents,
             cited_change_ids=cited_changes,
             confidence=confidence,
+            evidence_order=self._parse_evidence_order(obj),
         )
+
+    @staticmethod
+    def _parse_evidence_order(obj: dict) -> list[str]:
+        """Keep only known evidence-class names, de-duplicated, in the model's
+        stated order (drops anything hallucinated or malformed). An empty/invalid
+        value yields [] so the panel falls back to its default section order."""
+        raw = obj.get("evidence_order")
+        if not isinstance(raw, list):
+            return []
+        seen: set[str] = set()
+        out: list[str] = []
+        for name in raw:
+            if isinstance(name, str) and name in EVIDENCE_CLASSES and name not in seen:
+                seen.add(name)
+                out.append(name)
+        return out
 
     # ── write-back helpers ───────────────────────────────────────────────────
 

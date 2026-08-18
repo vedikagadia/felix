@@ -12,6 +12,8 @@ from .docs import DocRepository
 from .graph import GraphRepository
 from .incidents import IncidentRepository
 from .metrics import MetricRepository
+from .runbooks import RunbookRepository
+from .topology import TopologyRepository
 
 __all__ = [
     "ActionRepository",
@@ -21,4 +23,6 @@ __all__ = [
     "GraphRepository",
     "IncidentRepository",
     "MetricRepository",
+    "RunbookRepository",
+    "TopologyRepository",
 ]
