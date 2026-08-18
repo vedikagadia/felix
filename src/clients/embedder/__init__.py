@@ -37,7 +37,6 @@ class Embedder(ABC):
         return [self.embed(t) for t in texts]
 
 
-@lru_cache(maxsize=None)
 def get_embedder(provider: str | None = None) -> Embedder:
     """Construct the configured Embedder. `provider` overrides Settings if given.
 
@@ -47,12 +46,18 @@ def get_embedder(provider: str | None = None) -> Embedder:
     lets `serve` run the watcher in a background thread without doubling RAM —
     see the merged-task deploy in DEPLOY.md §4.
 
+    The cache lives on `_build_embedder`, keyed on the *resolved* provider
+    string — so `get_embedder()`, `get_embedder(None)`, and
+    `get_embedder("local")` all collapse to one instance. (Caching on this
+    function instead would key on the raw argument and load the model twice.)
+
     Raises ValueError for anything other than 'titan' or 'local'.
     """
     provider = (provider or get_settings().embed_provider).strip().lower()
     return _build_embedder(provider)
 
 
+@lru_cache(maxsize=None)
 def _build_embedder(provider: str) -> Embedder:
     if provider == "titan":
         from .titan import TitanEmbedder

@@ -1,5 +1,7 @@
-# One image, three roles (web / watch / sample) — the role is chosen at runtime
-# by $ROLE in docker/entrypoint.sh. See DEPLOY.md §2.
+# One image, two roles (web / watch) — the role is chosen at runtime by $ROLE
+# in docker/entrypoint.sh. See DEPLOY.md §2. `web` optionally also runs the CDC
+# watcher and the sample-traffic driver in-process (FELIX_RUN_WATCHER /
+# FELIX_RUN_SAMPLE).
 #
 # Two stages: (1) a node stage builds the React bundle; (2) a python runtime
 # stage installs deps, bakes the bge-large embedding model into the image (so a

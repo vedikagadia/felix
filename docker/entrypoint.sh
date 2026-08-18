@@ -4,12 +4,12 @@
 #
 #   web    → the API + built React UI on :8000        (public — gets a DuckDNS name)
 #   watch  → the CDC metrics watcher, standalone       (no public port — no DuckDNS)
-#   sample → the interactive checkout demo service    (public — gets a DuckDNS name)
 #
-# The deployed demo runs ONE task with ROLE=web and FELIX_RUN_WATCHER=1: the
-# API process also starts the CDC watcher on a background thread, sharing the
-# single in-memory embedding model (DEPLOY.md §4) — so web+watch cost one ~4GB
-# task, not two. The standalone `watch` role stays for local dev / a future
+# The deployed demo runs ONE task with ROLE=web, FELIX_RUN_WATCHER=1, and
+# FELIX_RUN_SAMPLE=1: the API process also starts the CDC watcher AND the
+# sample-traffic driver, each on its own background thread, sharing the single
+# in-memory embedding model (DEPLOY.md §4) — so web+watch+sample cost one ~4GB
+# task, not three. The standalone `watch` role stays for local dev / a future
 # split; it is not used by the merged deploy.
 #
 # Public roles self-register their DuckDNS name on boot so the link survives a
@@ -42,12 +42,8 @@ case "${ROLE:-}" in
     watch)
         exec python -m src watch
         ;;
-    sample)
-        update_duckdns
-        exec python -m sample_project.server
-        ;;
     *)
-        echo "[entrypoint] error: ROLE must be one of: web, watch, sample (got '${ROLE:-}')" >&2
+        echo "[entrypoint] error: ROLE must be one of: web, watch (got '${ROLE:-}')" >&2
         exit 1
         ;;
 esac

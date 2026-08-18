@@ -251,6 +251,12 @@ class BackgroundWatcher:
     def start(self) -> None:
         self._thread.start()
 
+    def is_alive(self) -> bool:
+        """True while the daemon thread is running. False once its loop has
+        exited (crash logged in `_run`, or a clean `stop()`) — this is what
+        `/health` reports so a silently-dead watcher is observable."""
+        return self._thread.is_alive()
+
     def _run(self) -> None:
         from ..store.connection import get_conn
 

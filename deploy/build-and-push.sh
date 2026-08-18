@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Build the one felix image and push it to ECR. All three roles (web+watch
-# merged, sample) run from this single image — the task defs pick the role via
-# the ROLE env var. See DEPLOY.md §5.1.
+# Build the one felix image and push it to ECR. Both roles (web+watch+sample
+# merged, watch standalone) run from this single image — the task defs pick
+# the role via the ROLE env var. See DEPLOY.md §5.1.
 #
 #   ./deploy/build-and-push.sh              # build + push :latest
 #   TAG=v2 ./deploy/build-and-push.sh       # build + push :v2 (and :latest)

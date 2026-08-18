@@ -17,13 +17,20 @@
       "environment": [
         { "name": "ROLE", "value": "web" },
         { "name": "FELIX_RUN_WATCHER", "value": "1" },
+        { "name": "FELIX_RUN_SAMPLE", "value": "1" },
         { "name": "EMBED_PROVIDER", "value": "local" },
         { "name": "LLM_PROVIDER", "value": "gemini" },
         { "name": "DUCKDNS_DOMAIN", "value": "felix-demo" },
+        { "name": "FELIX_CLI_ENABLED", "value": "false" },
 
-        { "name": "DATABASE_URL", "value": "REPLACE_WITH_COCKROACH_URL" },
-        { "name": "GEMINI_API_KEY", "value": "REPLACE_WITH_GEMINI_KEY" },
-        { "name": "DUCKDNS_TOKEN", "value": "REPLACE_WITH_DUCKDNS_TOKEN" }
+        { "name": "CRDB_MCP_URL", "value": "https://cockroachlabs.cloud/mcp" },
+        { "name": "CRDB_MCP_CLUSTER_ID", "value": "REPLACE_WITH_CRDB_CLUSTER_ID" }
+      ],
+      "secrets": [
+        { "name": "DATABASE_URL", "valueFrom": "arn:aws:secretsmanager:us-east-1:287211515912:secret:felix/DATABASE_URL" },
+        { "name": "GEMINI_API_KEY", "valueFrom": "arn:aws:secretsmanager:us-east-1:287211515912:secret:felix/GEMINI_API_KEY" },
+        { "name": "DUCKDNS_TOKEN", "valueFrom": "arn:aws:secretsmanager:us-east-1:287211515912:secret:felix/DUCKDNS_TOKEN" },
+        { "name": "CRDB_MCP_API_KEY", "valueFrom": "arn:aws:secretsmanager:us-east-1:287211515912:secret:felix/CRDB_MCP_API_KEY" }
       ],
       "logConfiguration": {
         "logDriver": "awslogs",
