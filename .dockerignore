@@ -1,0 +1,40 @@
+# Keep the build context small: only src/, sample_project/, sql/, frontend/
+# sources, and requirements.txt need to reach the daemon. Everything below is
+# either regenerated in the image (frontend deps + dist), local-only state, or
+# secrets.
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+venv/
+.pytest_cache/
+
+# Node — reinstalled with `npm ci` in the build stage; dist is rebuilt there too.
+# `**/` so the NESTED frontend/node_modules is excluded too (an unrooted
+# `node_modules/` only matches the context root — it would leak the host's
+# ~macOS binaries into the build and clobber the linux `npm ci` result).
+**/node_modules/
+frontend/dist/
+
+# Local single-node CockroachDB store (1.3GB) + any generated demo assets
+.crdb-data/
+demo/out/
+
+# Local-only design docs (not pushed)
+docs/
+
+# Orchestration scratch + captured test output
+.orchestration/
+live-test-output.txt
+
+# Secrets & VCS
+.env
+.git/
+.gitignore
+
+# OS / editor
+.DS_Store
+.idea/
+.vscode/

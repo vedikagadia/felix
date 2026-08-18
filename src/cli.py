@@ -117,18 +117,19 @@ def _cmd_watch(args: argparse.Namespace) -> None:
     fire the diagnoser when p99 latency spikes while avg stays green. Uses its
     OWN long-lived connection (not the request-scoped API dependency)."""
     import logging
+    import signal
 
-    from .clients.llm import get_llm
-    from .service.diagnoser import IncidentDiagnoser
-    from .service.watcher import MetricWatcher
-    from .store.repositories import (
-        ActionRepository,
-        ActiveIncidentRepository,
-        IncidentRepository,
-        MetricRepository,
-    )
+    from .service.watcher import build_watcher
 
     logging.basicConfig(level=logging.DEBUG if args.debug else logging.INFO, format="%(message)s")
+
+    # Fargate stops a task with SIGTERM, not SIGINT. Translate it into the same
+    # KeyboardInterrupt the teardown below already handles, so both DB
+    # connections close and the changefeed job finishes cleanly on task stop.
+    def _on_sigterm(_signum, _frame):
+        raise KeyboardInterrupt
+
+    signal.signal(signal.SIGTERM, _on_sigterm)
 
     settings = get_settings()
     if settings.llm_provider == "gemini" and not settings.gemini_api_key:
@@ -144,15 +145,7 @@ def _cmd_watch(args: argparse.Namespace) -> None:
     try:
         conn = get_conn()
         stream_conn = get_conn()
-        diagnoser = IncidentDiagnoser(
-            EvidenceGatherer(conn),
-            get_llm(),
-            IncidentRepository(conn),
-            ActionRepository(conn),
-            ActiveIncidentRepository(conn),
-        )
-        watcher = MetricWatcher(conn, stream_conn, MetricRepository(conn), diagnoser)
-        watcher.run()
+        build_watcher(conn, stream_conn).run()
     except KeyboardInterrupt:
         print("\nwatch: stopped.")
     finally:
