@@ -8,9 +8,8 @@
 
 Built for the **CockroachDB × AWS "Build with Agentic Memory"** hackathon. All
 memory lives in **one CockroachDB** (native `VECTOR` search, recursive-CTE graph
-traversal, and a live CDC changefeed). The reasoning model and embedder are
-swappable behind an env var — **Gemini** and a local `bge-large-en-v1.5` by
-default, with **AWS Bedrock** (Claude + Titan) as a drop-in alternative.
+traversal, and a live CDC changefeed), with pluggable reasoning and embedding
+models — including **AWS Bedrock** — behind an env var.
 
 - 📖 **Setup / run it yourself:** [SETUP.md](SETUP.md)
 - 🏗️ **Code walkthrough (`src/`):** [SRC_OVERVIEW.md](SRC_OVERVIEW.md)
