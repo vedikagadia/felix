@@ -16,14 +16,20 @@ const API_URL = import.meta.env.VITE_API_URL as string | undefined;
 
 /** The WebSocket URL for the PTY, or null in mock mode (no backend). */
 export function cliWsUrl(): string | null {
-  if (usingMock || !API_URL) return null;
+  if (usingMock) return null;
+  // Same-origin build (VITE_API_URL="") → derive ws(s)://<current host>/cli/ws
+  // from the page location; an explicit http(s)://host:port → swap the scheme.
+  if (!API_URL) {
+    const proto = window.location.protocol === "https:" ? "wss" : "ws";
+    return `${proto}://${window.location.host}/cli/ws`;
+  }
   // http(s)://host:port → ws(s)://host:port/cli/ws
   const ws = API_URL.replace(/^http/i, "ws").replace(/\/+$/, "");
   return `${ws}/cli/ws`;
 }
 
 export async function fetchCliStatus(): Promise<CliStatus> {
-  if (usingMock || !API_URL) {
+  if (usingMock) {
     return {
       enabled: false,
       ccloud_installed: false,

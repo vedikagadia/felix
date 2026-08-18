@@ -28,7 +28,12 @@ import {
 const API_URL = import.meta.env.VITE_API_URL as string | undefined;
 const FORCE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
 
-export const usingMock = FORCE_MOCK || !API_URL;
+// An empty-but-set VITE_API_URL ("") means "same-origin relative paths" — the
+// deployed bundle is served by the API itself, so `${API_URL}/chat` resolves to
+// `/chat` on the same host. Only a genuinely UNSET value (undefined) selects
+// mock mode. (`!API_URL` would wrongly treat "" as unset and force the shipped
+// production build into mock mode — the bug that showed canned data in deploy.)
+export const usingMock = FORCE_MOCK || API_URL === undefined;
 
 export class ApiError extends Error {
   constructor(
