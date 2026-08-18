@@ -416,7 +416,7 @@ are `{"name","valueFrom": "<ARN>"}` (step 5). The env split for
 | `DUCKDNS_DOMAIN` | `environment` | not sensitive — a hostname, not a credential |
 | `CRDB_MCP_URL` | `environment` | not sensitive — a public endpoint URL |
 | `CRDB_MCP_CLUSTER_ID` | `environment` | not sensitive — an identifier, not a credential; sent as the `mcp-cluster-id` header |
-| `FELIX_CLI_ENABLED` | `environment` | not sensitive — see §6 for what value to use |
+| `FELIX_CLI_ENABLED` | `environment` | not sensitive — set `true` so judges can use the interactive CLI panel. This turns ON the RCE shell knowingly; see §6 for the accepted-risk rationale + teardown guardrails |
 | `DATABASE_URL` | **`secrets`** | credential (DB password embedded in the URL) |
 | `GEMINI_API_KEY` | **`secrets`** | credential |
 | `CRDB_MCP_API_KEY` | **`secrets`** | credential — putting this in `secrets` (rather than leaving it unset and falling back to OAuth) is what **unblocks the DB-overview tab running headlessly**: a Fargate task has no browser to complete the one-time OAuth consent, so without a bearer token `GET /db/overview` will always degrade to `{connected:false}` on a deployed task. |
@@ -527,7 +527,7 @@ aws ecs update-service --cluster felix --service felix-web --force-new-deploymen
 
 ---
 
-## 6. Security callout — the CLI panel is effectively RCE (decision point, unresolved)
+## 6. Security callout — the CLI panel is effectively RCE (owner decision: ENABLED)
 
 `WS /cli/ws` (`src/api/terminal.py`) bridges a real login shell over the
 WebSocket so the browser terminal can run `ccloud` for real. That is, by
@@ -535,27 +535,31 @@ design, remote code execution against whatever the container's user can do —
 acceptable for local dev where the API binds `127.0.0.1`, but a real exposure
 once the same binary is serving `0.0.0.0` behind a public IP on Fargate.
 
-This decision is **deferred by the owner** — the runbook presents both
-options rather than picking one:
+**Decision (owner): the CLI panel is ENABLED in the deploy** —
+`FELIX_CLI_ENABLED=true` in the web task's `environment`. The interactive
+`ccloud` terminal is a core part of the demo (it's felix's third named
+CockroachDB offering made tangible), and judges must be able to open the "CLI"
+tab and run commands. The exposure is accepted **knowingly and with eyes open**:
 
-- **Option A — `FELIX_CLI_ENABLED=false`** in the web task's `environment`
-  for the public deploy. Kills the route entirely (`GET /cli/status` still
-  responds, reporting `enabled: false`; `WS /cli/ws` refuses connections).
-  Simple, no infrastructure change, but the "CLI" panel shows only the
-  explanatory placeholder for judges — one fewer thing to demo.
-- **Option B — leave it enabled and accept the exposure knowingly.** As noted
-  in step 6 above, the security group **cannot** scope this out at the
-  network layer (the terminal shares port 8000 with the API — there's no
-  path-based routing without adding an ALB, which §0 already declined for
-  cost). This is a real "anyone who finds the URL gets a shell" risk for as
-  long as the task is up. Only defensible for a short, watched judging window
-  on a low-value personal AWS account, and only if you're comfortable with
-  that.
+- The security group **cannot** scope this out at the network layer — the
+  terminal shares port 8000 with the API, so there's no path-based routing
+  without adding an ALB (§0 declined that for cost). Anyone who finds the
+  IP/DuckDNS URL while the task is up gets a shell.
+- This is defensible **only** because: (a) it's a short, watched judging
+  window, (b) on a low-value personal AWS account with nothing sensitive on it,
+  and (c) the shell's blast radius is just the container (Fargate task role
+  permissions + whatever `ccloud` is authed to). It is **not** a posture to
+  leave running unattended for days.
 
-**Recommendation if forced to pick:** Option A for any period the task is
-unattended; flip `FELIX_CLI_ENABLED=true` only for a live demo window you're
-actively watching, then flip it back (redeploy) afterward. But this is
-explicitly flagged here for the owner to decide, not resolved by this doc.
+**Operational guardrails while it's live:**
+- Tear the service down (`update-service --desired-count 0`, or delete it)
+  once judging is over — don't leave an RCE endpoint up indefinitely.
+- Keep the Fargate **task role** minimally scoped (it already is — no admin).
+- If you ever want to kill the panel without a code change, set
+  `FELIX_CLI_ENABLED=false` in the task-def and redeploy: `GET /cli/status`
+  then reports `enabled: false` and `WS /cli/ws` refuses connections, and the
+  "CLI" tab shows only its explanatory placeholder. The app-level default is
+  fail-closed (`config.py` → `false`), so this env var is what turns it ON.
 
 ---
 
@@ -576,7 +580,9 @@ explicitly flagged here for the owner to decide, not resolved by this doc.
 - **Restart window.** When Fargate replaces the task (redeploy, crash, Spot
   interruption, AWS maintenance), there's a gap where the DuckDNS name points
   at a dead IP until the new task's entrypoint updates it.
-- **CLI panel exposure — unresolved, see §6.**
+- **CLI panel exposure — ENABLED knowingly for the demo, see §6.** `WS /cli/ws`
+  is a live shell reachable by anyone with the URL while the task is up; tear
+  the service down once judging ends.
 - **Watcher/traffic-driver coupling.** Both now run in-thread inside `serve`,
   so you can't bounce either alone — restarting either means a new
   `felix-web` deployment. The traffic driver starts on boot, so by the time a
@@ -605,5 +611,7 @@ explicitly flagged here for the owner to decide, not resolved by this doc.
 3. **Sample traffic** — ✅ folded into the web task as a background thread
    gated by `FELIX_RUN_SAMPLE` (off by default locally, on for the deploy).
    No separate task, no separate service, no `sample_project.server`.
-4. **CLI panel exposure** — ⏳ **unresolved, owner decision** (§6). This
-   runbook does not pick Option A or B for you.
+4. **CLI panel exposure** — ✅ **ENABLED** (`FELIX_CLI_ENABLED=true`, §6). The
+   interactive `ccloud` terminal is part of the demo; the RCE exposure is
+   accepted for the watched judging window, with teardown-after-judging as the
+   guardrail. App default stays fail-closed (`config.py` → `false`).
