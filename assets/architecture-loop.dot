@@ -1,0 +1,32 @@
+digraph felix_loop {
+  rankdir=LR;
+  bgcolor="white";
+  fontname="Helvetica";
+  labelloc="t";
+  fontsize=20;
+  label=<<b>How felix turns an alert into an answer that compounds</b>>;
+
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=13,
+        penwidth=0, margin="0.22,0.16", fontcolor="white"];
+  edge [fontname="Helvetica", fontsize=11, color="#5b6472", penwidth=1.6,
+        arrowsize=0.8];
+
+  A [label="Alert\nsymptom shows up", fillcolor="#e0533d"];
+  B [label="Recall by meaning\nincidents · docs · merges\nrunbooks · code graph · live health", fillcolor="#3a7bd5"];
+  C [label="Reason\ntrace symptom to cause,\ndiagnose", fillcolor="#7048b6"];
+  D [label="Answer\nroot cause + fix steps,\neach citing its evidence", fillcolor="#2fa36b"];
+  E [label="Learn\na human ✔ confirms →\nthe diagnosis becomes recallable", fillcolor="#d99a1c"];
+
+  M [label="CockroachDB\nthe one memory", shape=cylinder, fillcolor="#1b2a4a",
+     fontcolor="white", margin="0.25,0.18"];
+
+  A -> B -> C -> D -> E;
+  E -> B [label="feeds future recall", style=dashed, constraint=false,
+          color="#d99a1c", fontcolor="#a8790f"];
+
+  { rank=same; B; C; D; }
+
+  B -> M [dir=both, color="#8a94a6", style=dotted];
+  C -> M [dir=both, color="#8a94a6", style=dotted];
+  E -> M [color="#8a94a6", style=dotted];
+}
