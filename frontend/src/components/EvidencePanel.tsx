@@ -55,7 +55,7 @@ export function EvidencePanel({
     if (turn.error) {
       return <div className="evidence__empty">No evidence — the request did not complete.</div>;
     }
-    return <div className="evidence__empty">Gathering evidence…</div>;
+    return <SearchingFox />;
   }
 
   return (
@@ -67,6 +67,43 @@ export function EvidencePanel({
       activeCitation={activeCitation}
       onCitationFocus={onCitationFocus}
     />
+  );
+}
+
+/**
+ * The "felix is searching memory" state for the right panel while recall runs
+ * (before the evidence frame lands). A fox with a sweeping magnifying glass,
+ * over the four memory sources pulsing in turn — a playful stand-in for "felix
+ * is sniffing through incidents / docs / changes / the code graph". Pure CSS,
+ * no deps; honours prefers-reduced-motion (the CSS drops the motion).
+ */
+function SearchingFox() {
+  return (
+    <div className="evidence__empty foxsearch">
+      <div className="foxsearch__scene" aria-hidden>
+        <span className="foxsearch__glow" />
+        <span className="foxsearch__fox">🦊</span>
+        <span className="foxsearch__glass">🔍</span>
+        <span className="foxsearch__shadow" />
+      </div>
+      <p className="foxsearch__label">
+        felix is sniffing through memory<span className="foxsearch__ell" />
+      </p>
+      <ul className="foxsearch__sources">
+        <li>
+          <span className="dot dot--inc" /> incidents
+        </li>
+        <li>
+          <span className="dot dot--doc" /> docs
+        </li>
+        <li>
+          <span className="dot dot--chg" /> changes
+        </li>
+        <li>
+          <span className="dot dot--graph" /> graph
+        </li>
+      </ul>
+    </div>
   );
 }
 

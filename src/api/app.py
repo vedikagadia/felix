@@ -30,6 +30,7 @@ from .schemas import (
     incident_to_dict,
     metric_sample_to_dict,
     packet_to_dict,
+    project_to_dict,
     result_to_dict,
     session_to_dict,
 )
@@ -153,6 +154,21 @@ class DbExecuteRequest(BaseModel):
     args: dict = Field(..., description="The tool's arguments, exactly as previewed in the plan.")
 
 
+class OnboardRequest(BaseModel):
+    source: str = Field(
+        ...,
+        min_length=1,
+        description="A local directory path or a git URL to onboard as a project.",
+    )
+    name: str | None = Field(default=None, description="Display name (defaults to the repo/dir name).")
+    project: str | None = Field(default=None, description="Project slug (defaults to a slug of the name).")
+    sources: list[str] | None = Field(
+        default=None,
+        description="Subset of code/changes/docs/runbooks to ingest (default: all).",
+    )
+    max_commits: int = Field(default=200, ge=1, le=5000, description="git-log commits to ingest.")
+
+
 def db_conn():
     """Per-request connection dependency. Mirrors the CLI's one-conn-per-run
     lifetime — the caller (this request) owns and closes it."""
@@ -204,37 +220,82 @@ def create_app() -> FastAPI:
         degraded = any(alive is False for alive in threads.values())
         return {"status": "degraded" if degraded else "ok", "threads": threads}
 
+    @app.get("/projects")
+    def list_projects(conn=Depends(db_conn)) -> dict:
+        """Every onboarded project (the built-in demo first, then newest-first) —
+        powers the header project switcher. Pure read, no LLM. Returns
+        {"projects": [Project, ...]}."""
+        from ..store.repositories import ProjectRepository
+
+        rows = ProjectRepository(conn).list_projects()
+        return {"projects": [project_to_dict(p) for p in rows]}
+
+    @app.post("/projects/onboard")
+    def onboard_project(req: OnboardRequest, conn=Depends(db_conn)) -> dict:
+        """Onboard another project (local path or git URL) into felix's memory:
+        parse its code graph and ingest its git log / docs / runbooks under a new
+        project namespace, then register it so the switcher lists it. Runs in the
+        threadpool (declared `def`) since ingest + embedding is blocking.
+
+        Returns {"project", "display_name", "source_kind", "source_ref",
+        "counts": {...}} on success; 400 on a bad source (missing path, clone
+        failure, or the reserved 'sample' slug)."""
+        from ..service.onboarding import ALL_SOURCES, OnboardingService
+
+        sources = tuple(req.sources) if req.sources else ALL_SOURCES
+        try:
+            result = OnboardingService(conn).onboard(
+                req.source,
+                display_name=req.name,
+                project=req.project,
+                sources=sources,
+                max_commits=req.max_commits,
+            )
+        except (ValueError, RuntimeError) as e:
+            raise HTTPException(status_code=400, detail=str(e))
+        return {
+            "project": result.project,
+            "display_name": result.display_name,
+            "source_kind": result.source_kind,
+            "source_ref": result.source_ref,
+            "counts": result.counts,
+        }
+
     @app.post("/recall")
-    def recall(req: ChatRequest, conn=Depends(db_conn)) -> dict:
+    def recall(req: ChatRequest, project: str = "sample", conn=Depends(db_conn)) -> dict:
         """Retrieval only — the `--no-llm` equivalent. Never writes, never calls
-        the LLM. Returns {"evidence": EvidencePacket}."""
-        gatherer = EvidenceGatherer(conn)
+        the LLM. Returns {"evidence": EvidencePacket}. `project` (query param)
+        scopes recall to one onboarded project's memory (default: the demo)."""
+        gatherer = EvidenceGatherer(conn, project=project)
         packet = gatherer.gather(req.alert, origin_node=req.origin_node, k=req.k)
         return {"evidence": packet_to_dict(packet)}
 
     @app.get("/incidents")
-    def list_incidents(limit: int = 200, conn=Depends(db_conn)) -> dict:
-        """The whole incident library, newest-first, for the browse page. Pure
-        read, no LLM. Returns {"incidents": [{item, distance}]} — `distance` is
-        null here (this view isn't vector-ranked); the shape matches
+    def list_incidents(limit: int = 200, project: str = "sample", conn=Depends(db_conn)) -> dict:
+        """The whole incident library for `project`, newest-first, for the browse
+        page. Pure read, no LLM. Returns {"incidents": [{item, distance}]} —
+        `distance` is null here (this view isn't vector-ranked); the shape matches
         /incidents/search so the frontend renders one list either way."""
         from ..store.repositories import IncidentRepository
 
-        rows = IncidentRepository(conn).list_all(limit=limit)
+        rows = IncidentRepository(conn, project).list_all(limit=limit)
         return {"incidents": [{"item": incident_to_dict(i), "distance": None} for i in rows]}
 
     @app.get("/incidents/search")
-    def search_incidents(
-        q: str = Query(..., min_length=1, max_length=8000), k: int = 10, conn=Depends(db_conn)
-    ) -> dict:
-        """Semantic search over the incident library — embeds `q` and ranks
-        incidents by CockroachDB VECTOR distance (the showcase). Returns
+ def search_incidents(
+          q: str = Query(..., min_length=1, max_length=8000),
+          k: int = 10,
+          project: str = "sample",
+          conn=Depends(db_conn),
+      ) -> dict:
+          """Semantic search over `project`'s incident library — embeds `q` and
+          ranks incidents by CockroachDB VECTOR distance (the showcase). Returns
         {"query", "incidents": [{item, distance}]} sorted nearest-first."""
         from ..clients.embedder import get_embedder
         from ..store.repositories import IncidentRepository
 
         qv = get_embedder().embed(q)
-        hits = IncidentRepository(conn).search(qv, k=k)
+        hits = IncidentRepository(conn, project).search(qv, k=k)
         return {
             "query": q,
             "incidents": [{"item": incident_to_dict(h.item), "distance": h.distance} for h in hits],
@@ -242,7 +303,7 @@ def create_app() -> FastAPI:
 
     @app.post("/incidents/{incident_id}/feedback")
     def incident_feedback(
-        incident_id: str, req: FeedbackRequest, conn=Depends(db_conn)
+        incident_id: str, req: FeedbackRequest, project: str = "sample", conn=Depends(db_conn)
     ) -> dict:
         """Record human feedback on a live-diagnosed incident — felix's learning
         loop. `helpful=true` embeds the incident (title + symptoms, the same text
@@ -252,7 +313,7 @@ def create_app() -> FastAPI:
         LLM. Returns {incident_id, feedback, recallable}."""
         from ..store.repositories import ActionRepository, IncidentRepository
 
-        repo = IncidentRepository(conn)
+        repo = IncidentRepository(conn, project)
         incident = repo.get(incident_id)
         if incident is None:
             raise HTTPException(status_code=404, detail="incident not found")
@@ -266,7 +327,7 @@ def create_app() -> FastAPI:
         # One transaction: promote/demote the row + write the audit trail together.
         with conn.transaction():
             repo.record_feedback(incident_id, helpful=req.helpful, embedding=embedding)
-            ActionRepository(conn).log(
+            ActionRepository(conn, project).log(
                 action_type="feedback",
                 tool_called="record_feedback",
                 input={"incident_id": incident_id, "helpful": req.helpful},
@@ -279,13 +340,13 @@ def create_app() -> FastAPI:
         }
 
     @app.get("/alerts")
-    def alerts(conn=Depends(db_conn)) -> dict:
-        """Open cdc-sourced sessions, newest-first, as frozen AlertPayloads
-        (CDC_INTERFACE §7.3). Pure read — the browser polls this every 3s; no
-        LLM guard. Returns {"alerts": [AlertPayload, ...]}."""
+    def alerts(project: str = "sample", conn=Depends(db_conn)) -> dict:
+        """Open cdc-sourced sessions for `project`, newest-first, as frozen
+        AlertPayloads (CDC_INTERFACE §7.3). Pure read — the browser polls this
+        every 3s; no LLM guard. Returns {"alerts": [AlertPayload, ...]}."""
         from ..store.repositories import ActiveIncidentRepository
 
-        rows = ActiveIncidentRepository(conn).list_alerts(source="cdc", status="open")
+        rows = ActiveIncidentRepository(conn, project).list_alerts(source="cdc", status="open")
         return {"alerts": [alert_to_dict(r) for r in rows]}
 
     @app.get("/metrics/config")
@@ -307,21 +368,24 @@ def create_app() -> FastAPI:
         limit: int = 200,
         service: str | None = None,
         metric: str | None = None,
+        project: str = "sample",
         conn=Depends(db_conn),
     ) -> dict:
-        """Recent metric samples for the live-monitoring panel's cold start —
+        """Recent metric samples for `project`'s live-monitoring cold start —
         oldest-first so the frontend can seed each sparkline directly. Optional
         `service`/`metric` filters. Pure read; no LLM. Returns
         {"samples": [MetricSample, ...]}."""
         from ..store.repositories import MetricRepository
 
-        rows = MetricRepository(conn).recent_samples(limit=limit, service=service, metric=metric)
+        rows = MetricRepository(conn, project).recent_samples(limit=limit, service=service, metric=metric)
         # recent_samples is newest-first; reverse to chronological for plotting.
         samples = [metric_sample_to_dict(r) for r in reversed(rows)]
         return {"samples": samples}
 
     @app.get("/metrics/stream")
-    def metrics_stream(service: str | None = None, metric: str | None = None) -> StreamingResponse:
+    def metrics_stream(
+        service: str | None = None, metric: str | None = None, project: str = "sample"
+    ) -> StreamingResponse:
         """Live metric feed over Server-Sent Events — the CDC showcase for the
         live-monitoring panel. Holds a sinkless CHANGEFEED on `metrics` and emits
         one `sample` frame per new row (optionally filtered by service/metric):
@@ -348,6 +412,8 @@ def create_app() -> FastAPI:
                         payload = json.loads(row[2].decode())
                         after = payload.get("after")
                         if after is None:  # a delete — we only INSERT metrics
+                            continue
+                        if after.get("project", "sample") != project:
                             continue
                         if service and after.get("service") != service:
                             continue
@@ -494,25 +560,25 @@ def create_app() -> FastAPI:
         await run_terminal(ws)
 
     @app.get("/sessions/{session_id}")
-    def get_session(session_id: str, conn=Depends(db_conn)) -> dict:
+    def get_session(session_id: str, project: str = "sample", conn=Depends(db_conn)) -> dict:
         """A session's transcript + the diagnosis reconstructed from its linked
         episodic incident (CDC_INTERFACE §7.2). 404 if unknown. Pure read — no
         LLM guard, no recall re-run (`evidence` is null)."""
         from ..store.repositories import ActiveIncidentRepository, IncidentRepository
 
-        session = ActiveIncidentRepository(conn).get_session(session_id)
+        session = ActiveIncidentRepository(conn, project).get_session(session_id)
         if session is None:
             raise HTTPException(status_code=404, detail="session not found")
         incident = (
-            IncidentRepository(conn).get(session.incident_id)
+            IncidentRepository(conn, project).get(session.incident_id)
             if session.incident_id is not None
             else None
         )
         return session_to_dict(session, incident)
 
     @app.post("/chat")
-    def chat(req: ChatRequest, conn=Depends(db_conn)) -> dict:
-        """Full loop: recall -> reason -> write-back. Returns
+    def chat(req: ChatRequest, project: str = "sample", conn=Depends(db_conn)) -> dict:
+        """Full loop: recall -> reason -> write-back, scoped to `project`. Returns
         {"diagnosis": Diagnosis, "evidence": EvidencePacket}."""
         settings = get_settings()
         if settings.llm_provider == "gemini" and not settings.gemini_api_key:
@@ -533,13 +599,13 @@ def create_app() -> FastAPI:
             IncidentRepository,
         )
 
-        gatherer = EvidenceGatherer(conn)
+        gatherer = EvidenceGatherer(conn, project=project)
         diagnoser = IncidentDiagnoser(
             gatherer,
             get_llm(),
-            IncidentRepository(conn),
-            ActionRepository(conn),
-            ActiveIncidentRepository(conn),
+            IncidentRepository(conn, project),
+            ActionRepository(conn, project),
+            ActiveIncidentRepository(conn, project),
         )
         result = diagnoser.respond(
             req.alert, origin_node=req.origin_node, k=req.k, session_id=req.session_id
@@ -547,7 +613,7 @@ def create_app() -> FastAPI:
         return result_to_dict(result)
 
     @app.post("/chat/stream")
-    def chat_stream(req: ChatRequest, conn=Depends(db_conn)) -> StreamingResponse:
+    def chat_stream(req: ChatRequest, project: str = "sample", conn=Depends(db_conn)) -> StreamingResponse:
         """Streaming twin of /chat: the full loop, but the diagnosis is delivered
         as Server-Sent Events so the UI can show recall + reasoning live.
 
@@ -576,13 +642,13 @@ def create_app() -> FastAPI:
             IncidentRepository,
         )
 
-        gatherer = EvidenceGatherer(conn)
+        gatherer = EvidenceGatherer(conn, project=project)
         diagnoser = IncidentDiagnoser(
             gatherer,
             get_llm(),
-            IncidentRepository(conn),
-            ActionRepository(conn),
-            ActiveIncidentRepository(conn),
+            IncidentRepository(conn, project),
+            ActionRepository(conn, project),
+            ActiveIncidentRepository(conn, project),
         )
 
         def event_stream():

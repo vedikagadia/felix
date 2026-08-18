@@ -26,11 +26,11 @@ class ActiveIncidentRepository(BaseRepository):
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO active_incidents (alert, origin_node, incident_id, source)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO active_incidents (project, alert, origin_node, incident_id, source)
+                VALUES (%s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (alert, origin_node, incident_id, source),
+                (self.project, alert, origin_node, incident_id, source),
             )
             row = cur.fetchone()
         return str(row[0])
@@ -42,9 +42,9 @@ class ActiveIncidentRepository(BaseRepository):
                 """
                 SELECT id, alert, origin_node, incident_id, status, source
                 FROM active_incidents
-                WHERE id = %s
+                WHERE id = %s AND project = %s
                 """,
-                (session_id,),
+                (session_id, self.project),
             )
             row = cur.fetchone()
             if row is None:
@@ -82,10 +82,10 @@ class ActiveIncidentRepository(BaseRepository):
                 """
                 SELECT id, alert, origin_node, source, status, created_at
                 FROM active_incidents
-                WHERE source = %s AND status = %s
+                WHERE source = %s AND status = %s AND project = %s
                 ORDER BY created_at DESC
                 """,
-                (source, status),
+                (source, status, self.project),
             )
             rows = cur.fetchall()
         return [
@@ -108,9 +108,9 @@ class ActiveIncidentRepository(BaseRepository):
             cur.execute(
                 """
                 SELECT count(*) FROM active_incidents
-                WHERE status = 'open' AND source = %s AND origin_node = %s
+                WHERE status = 'open' AND source = %s AND origin_node = %s AND project = %s
                 """,
-                (source, origin_node),
+                (source, origin_node, self.project),
             )
             return int(cur.fetchone()[0])
 

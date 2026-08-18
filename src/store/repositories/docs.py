@@ -26,11 +26,11 @@ class DocRepository(BaseRepository):
             cur.execute(
                 """
                 INSERT INTO doc_chunks
-                    (id, doc_title, heading, body, doc_type, source_path, embedding)
+                    (id, project, doc_title, heading, body, doc_type, source_path, embedding)
                 VALUES
-                    (%s, %s, %s, %s, %s, %s, %s::VECTOR(1024))
+                    (%s, %s, %s, %s, %s, %s, %s, %s::VECTOR(1024))
                 """,
-                (id, doc_title, heading, body, doc_type, source_path, vec_literal(embedding)),
+                (id, self.project, doc_title, heading, body, doc_type, source_path, vec_literal(embedding)),
             )
         return id
 
@@ -42,10 +42,11 @@ class DocRepository(BaseRepository):
                 SELECT id, doc_title, heading, body, doc_type,
                        embedding <-> %s::VECTOR(1024) AS distance
                 FROM doc_chunks
+                WHERE embedding IS NOT NULL AND project = %s
                 ORDER BY distance
                 LIMIT %s
                 """,
-                (vec_literal(query_vec), k),
+                (vec_literal(query_vec), self.project, k),
             )
             rows = cur.fetchall()
         return [

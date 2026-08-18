@@ -249,6 +249,50 @@ export interface FeedbackResponse {
   recallable: boolean;
 }
 
+// ── projects (multi-tenant onboarding) ──────────────────────────────────────
+
+/**
+ * One onboarded project — a namespace over felix's memory. The built-in demo is
+ * `sample`; each onboarded repo/dir gets its own slug. Served by `GET /projects`
+ * and used by the header switcher; `id` is the slug threaded as the `?project=`
+ * query param on every scoped API call.
+ */
+export interface Project {
+  id: string;
+  display_name: string;
+  source_kind: string | null; // "local" | "git" | null (the built-in demo)
+  source_ref: string | null; // the path or git URL it was onboarded from
+  created_at: string | null; // ISO 8601
+  last_synced: string | null; // ISO 8601; null until the first ingest completes
+}
+
+/**
+ * Body for `POST /projects/onboard`. `source` is a local directory path or a git
+ * URL; `sources` optionally narrows what to ingest (default: all four —
+ * code / changes / docs / runbooks). `name`/`project` default to the repo name
+ * and a slug of it.
+ */
+export interface OnboardRequest {
+  source: string;
+  name?: string | null;
+  project?: string | null;
+  sources?: string[] | null;
+  max_commits?: number;
+}
+
+/**
+ * Result of `POST /projects/onboard`. `counts` maps each ingested source
+ * ("code" | "changes" | "docs" | "runbooks") to how many rows landed, so the
+ * panel can report "526 code nodes, 8 changes, 107 docs" after a run.
+ */
+export interface OnboardResult {
+  project: string;
+  display_name: string;
+  source_kind: string;
+  source_ref: string;
+  counts: Record<string, number>;
+}
+
 // ── real-time CDC alerts (see .orchestration/CDC_INTERFACE.md §7) ────────────
 
 /**

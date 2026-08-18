@@ -76,7 +76,7 @@ def _print_diagnosis(diagnosis: Diagnosis) -> None:
 def _cmd_respond(args: argparse.Namespace) -> None:
     conn = get_conn()
     try:
-        gatherer = EvidenceGatherer(conn)
+        gatherer = EvidenceGatherer(conn, project=args.project)
         settings = get_settings()
         llm_unavailable = settings.llm_provider == "gemini" and not settings.gemini_api_key
 
@@ -100,7 +100,10 @@ def _cmd_respond(args: argparse.Namespace) -> None:
         from .store.repositories import ActionRepository, IncidentRepository
 
         diagnoser = IncidentDiagnoser(
-            gatherer, get_llm(), IncidentRepository(conn), ActionRepository(conn)
+            gatherer,
+            get_llm(),
+            IncidentRepository(conn, args.project),
+            ActionRepository(conn, args.project),
         )
         result = diagnoser.respond(args.alert, origin_node=args.origin_node, k=args.k)
         _print_packet(result.evidence)
@@ -182,6 +185,38 @@ def _cmd_parse(args: argparse.Namespace) -> None:
         print(f"{id_to_name.get(e['src_id'])} --{e['kind']}--> {id_to_name.get(e['dst_id'])}")
 
 
+# ── onboard ──────────────────────────────────────────────────────────────────
+
+
+def _cmd_onboard(args: argparse.Namespace) -> None:
+    """Onboard another project into felix's memory: parse its code graph, ingest
+    its git log / docs / runbooks under a new project namespace, and register it
+    so the frontend switcher can select it. `source` is a local path or git URL."""
+    from .service.onboarding import ALL_SOURCES, OnboardingService
+
+    sources = tuple(s.strip() for s in args.sources.split(",")) if args.sources else ALL_SOURCES
+
+    conn = get_conn()
+    try:
+        svc = OnboardingService(conn)
+        print(f"onboarding {args.source!r} …")
+        result = svc.onboard(
+            args.source,
+            display_name=args.name,
+            project=args.project,
+            sources=sources,
+            max_commits=args.max_commits,
+        )
+        print(f"\nonboarded project '{result.project}' ({result.display_name})")
+        print(f"  source: {result.source_kind} — {result.source_ref}")
+        print(f"  local:  {result.local_path}")
+        for k, v in result.counts.items():
+            print(f"  {k:14} {v}")
+        print(f"\nAsk felix about it:  python -m src respond \"<alert>\" --project {result.project}")
+    finally:
+        conn.close()
+
+
 # ── mcp-probe ────────────────────────────────────────────────────────────────
 
 
@@ -251,6 +286,11 @@ def build_parser() -> argparse.ArgumentParser:
     )
     p_respond.add_argument("-k", type=int, default=3, help="results per source")
     p_respond.add_argument(
+        "--project",
+        default="sample",
+        help="which onboarded project's memory to search (default: sample)",
+    )
+    p_respond.add_argument(
         "--no-llm",
         action="store_true",
         help="evidence packet only ([1]-[4]) — skip the LLM diagnosis step, no DB writes",
@@ -268,6 +308,17 @@ def build_parser() -> argparse.ArgumentParser:
 
     p_parse = sub.add_parser("parse", help="parse the sample project into a code graph and print a summary")
     p_parse.set_defaults(func=_cmd_parse)
+
+    p_onboard = sub.add_parser("onboard", help="onboard another project (local path or git URL) into felix's memory")
+    p_onboard.add_argument("source", help="a local directory path or a git URL")
+    p_onboard.add_argument("--name", help="display name (defaults to the repo/dir name)")
+    p_onboard.add_argument("--project", help="project slug (defaults to a slug of the name)")
+    p_onboard.add_argument(
+        "--sources",
+        help="comma-separated subset of: code,changes,docs,runbooks (default: all)",
+    )
+    p_onboard.add_argument("--max-commits", type=int, default=200, help="git-log commits to ingest (default 200)")
+    p_onboard.set_defaults(func=_cmd_onboard)
 
     p_mcp = sub.add_parser("mcp-probe", help="connect to the CockroachDB Managed MCP Server and list its tools")
     p_mcp.set_defaults(func=_cmd_mcp_probe)

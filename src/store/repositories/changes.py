@@ -30,13 +30,14 @@ class ChangeRepository(BaseRepository):
             cur.execute(
                 """
                 INSERT INTO code_changes
-                    (id, commit_sha, merged_at, author, title, summary,
+                    (id, project, commit_sha, merged_at, author, title, summary,
                      files_changed, services_affected, affected_components, embedding)
                 VALUES
-                    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::VECTOR(1024))
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s::VECTOR(1024))
                 """,
                 (
                     id,
+                    self.project,
                     commit_sha,
                     merged_at,
                     author,
@@ -64,11 +65,12 @@ class ChangeRepository(BaseRepository):
                 SELECT id, commit_sha, merged_at, title, summary,
                        embedding <-> %s::VECTOR(1024) AS distance
                 FROM code_changes
-                WHERE merged_at > now() - (%s * interval '1 day')
+                WHERE embedding IS NOT NULL
+                  AND merged_at > now() - (%s * interval '1 day') AND project = %s
                 ORDER BY distance
                 LIMIT %s
                 """,
-                (vec_literal(query_vec), since_days, k),
+                (vec_literal(query_vec), since_days, self.project, k),
             )
             rows = cur.fetchall()
         return [

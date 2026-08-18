@@ -42,9 +42,10 @@ export function DbOverviewPage() {
           </span>
         </h2>
         <p className="dbov__sub">
-          A read-only snapshot of the cluster, gathered through the <strong>CockroachDB Cloud
-          Managed MCP Server</strong> — felix acting as its own MCP client. No direct SQL on this
-          path; every number below came back from an MCP tool call.
+          A read-only snapshot of the cluster, gathered through the{" "}
+          <strong className="dbov__mcp">CockroachDB Cloud Managed MCP Server</strong> — felix acting
+          as its own MCP client. No direct SQL on this path; every number below came back from an
+          MCP tool call.
         </p>
       </div>
 

@@ -1589,6 +1589,11 @@ body {
   margin: 0 0 20px;
   max-width: 720px;
 }
+
+/* The named CockroachDB offering — highlighted green (the app's ok/healthy hue). */
+.dbov__mcp {
+  color: var(--graph);
+}
 .dbov__status,
 .dbov__disconnected {
   color: var(--text-dim);
@@ -2283,4 +2288,535 @@ body {
   font-size: 12px;
   color: var(--text-faint);
   text-align: center;
+}
+
+/* ── header project switcher ─────────────────────────────────────────────── */
+
+.app__project {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-right: 16px;
+}
+
+.app__projectlabel {
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-faint);
+}
+
+.app__projectsel {
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 6px 10px;
+  cursor: pointer;
+  max-width: 220px;
+}
+
+.app__projectsel:hover,
+.app__projectsel:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* ── onboard page ────────────────────────────────────────────────────────── */
+
+.onboard {
+  max-width: 760px;
+  margin: 0 auto;
+  padding: 28px 24px 48px;
+}
+
+.onboard__head h2 {
+  margin: 0 0 4px;
+  font-size: 22px;
+}
+
+.onboard__sub {
+  margin: 0 0 18px;
+  color: var(--text-dim);
+  font-size: 13px;
+  line-height: 1.55;
+}
+
+.onboard__sub code,
+.onboard__note code,
+.onboard__result code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.onboard__mock {
+  background: var(--accent-dim);
+  border: 1px solid var(--accent);
+  border-radius: 8px;
+  padding: 10px 12px;
+  font-size: 12px;
+  color: var(--text);
+  margin-bottom: 16px;
+}
+
+.onboard__mock code {
+  font-family: var(--mono);
+}
+
+.onboard__form {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.onboard__field {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.onboard__row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+
+.onboard__label {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text-dim);
+}
+
+.onboard__input {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  color: var(--text);
+  font-size: 14px;
+  padding: 10px 12px;
+}
+
+.onboard__input:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.onboard__input:disabled {
+  opacity: 0.55;
+}
+
+.onboard__input--num {
+  max-width: 140px;
+}
+
+.onboard__hint {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.onboard__sources {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+}
+
+.onboard__source {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  align-items: baseline;
+  gap: 4px 8px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 10px 12px;
+  cursor: pointer;
+}
+
+.onboard__source.is-on {
+  border-color: var(--accent);
+}
+
+.onboard__source input {
+  grid-row: span 2;
+  accent-color: var(--accent);
+}
+
+.onboard__sourcelabel {
+  font-size: 13px;
+  font-weight: 600;
+}
+
+.onboard__sourcehint {
+  grid-column: 2;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+
+.onboard__field--commits {
+  flex-direction: row;
+  align-items: center;
+  gap: 12px;
+}
+
+.onboard__actions {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+}
+
+.onboard__busy {
+  font-size: 12px;
+  color: var(--text-faint);
+}
+
+.onboard__error {
+  margin: 4px 0 0;
+}
+
+.onboard__result {
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius);
+  padding: 16px;
+}
+
+.onboard__result h3 {
+  margin: 0 0 4px;
+  font-size: 16px;
+}
+
+.onboard__resultsub {
+  margin: 0 0 12px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.onboard__counts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.onboard__count {
+  background: var(--bg-elev2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 6px 10px;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+.onboard__count strong {
+  color: var(--text);
+}
+
+.onboard__switch {
+  margin: 0;
+}
+
+.onboard__note {
+  margin-top: 28px;
+  padding: 16px;
+  background: var(--bg-elev);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.onboard__note h4 {
+  margin: 0 0 6px;
+  font-size: 14px;
+}
+
+.onboard__note p {
+  margin: 0;
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+/* ── live-monitoring "send your own metrics" help card ───────────────────── */
+
+.metrichelp {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--bg-elev);
+  margin-bottom: 16px;
+}
+
+.metrichelp__toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  background: transparent;
+  border: none;
+  color: var(--text);
+  font-size: 13px;
+  font-weight: 600;
+  padding: 12px 14px;
+  cursor: pointer;
+  text-align: left;
+}
+
+.metrichelp__scope {
+  margin-left: auto;
+  font-size: 12px;
+  font-weight: 400;
+  color: var(--text-faint);
+}
+
+.metrichelp__scope code {
+  font-family: var(--mono);
+  color: var(--accent);
+}
+
+.metrichelp__body {
+  padding: 0 14px 14px;
+  border-top: 1px solid var(--border);
+}
+
+.metrichelp__body p {
+  font-size: 13px;
+  line-height: 1.55;
+  color: var(--text-dim);
+}
+
+.metrichelp__body code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--accent);
+}
+
+.metrichelp__body h5 {
+  margin: 16px 0 6px;
+  font-size: 12px;
+  color: var(--text-dim);
+}
+
+.metrichelp__code {
+  margin: 0;
+  padding: 12px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  overflow-x: auto;
+}
+
+.metrichelp__code code {
+  font-family: var(--mono);
+  font-size: 12px;
+  color: var(--text-dim);
+  white-space: pre;
+}
+
+.metrichelp__foot {
+  margin-top: 12px;
+}
+
+/* ── "felix is searching memory" fox animation (evidence panel) ──────────── */
+
+.foxsearch {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  min-height: 260px;
+}
+
+.foxsearch__scene {
+  position: relative;
+  width: 160px;
+  height: 120px;
+  display: grid;
+  place-items: center;
+}
+
+/* Soft accent glow that breathes behind the fox — the "warm search" halo. */
+.foxsearch__glow {
+  position: absolute;
+  width: 96px;
+  height: 96px;
+  border-radius: 50%;
+  background: radial-gradient(circle, rgba(240, 136, 62, 0.22), transparent 70%);
+  animation: fox-glow 2.4s ease-in-out infinite;
+}
+
+.foxsearch__fox {
+  position: relative;
+  font-size: 56px;
+  line-height: 1;
+  transform-origin: 50% 90%;
+  animation: fox-bob 1.3s ease-in-out infinite;
+}
+
+/* The magnifying glass sweeps around the fox as if scanning for a scent. */
+.foxsearch__glass {
+  position: absolute;
+  font-size: 28px;
+  line-height: 1;
+  animation: glass-sweep 2.6s ease-in-out infinite;
+}
+
+/* A little ground shadow that shrinks as the fox hops up — sells the bob. */
+.foxsearch__shadow {
+  position: absolute;
+  bottom: 8px;
+  width: 52px;
+  height: 9px;
+  border-radius: 50%;
+  background: rgba(0, 0, 0, 0.4);
+  filter: blur(2px);
+  animation: fox-shadow 1.3s ease-in-out infinite;
+}
+
+.foxsearch__label {
+  margin: 14px 0 0;
+  font-size: 13px;
+  color: var(--text-dim);
+}
+
+/* Animated "…" so the label reads as ongoing work. */
+.foxsearch__ell::after {
+  content: "…";
+  animation: fox-ellipsis 1.4s steps(4, end) infinite;
+}
+
+.foxsearch__sources {
+  list-style: none;
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px 16px;
+  padding: 0;
+  margin: 14px 0 0;
+}
+
+.foxsearch__sources li {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--text-faint);
+  animation: src-pulse 2.4s ease-in-out infinite;
+}
+
+/* Each source lights up in turn — felix "checking" one memory at a time. */
+.foxsearch__sources li:nth-child(1) {
+  animation-delay: 0s;
+}
+.foxsearch__sources li:nth-child(2) {
+  animation-delay: 0.4s;
+}
+.foxsearch__sources li:nth-child(3) {
+  animation-delay: 0.8s;
+}
+.foxsearch__sources li:nth-child(4) {
+  animation-delay: 1.2s;
+}
+
+@keyframes fox-bob {
+  0%,
+  100% {
+    transform: translateY(0) rotate(-3deg);
+  }
+  50% {
+    transform: translateY(-10px) rotate(3deg);
+  }
+}
+
+@keyframes fox-shadow {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 0.4;
+  }
+  50% {
+    transform: scale(0.7);
+    opacity: 0.22;
+  }
+}
+
+@keyframes glass-sweep {
+  0% {
+    transform: translate(-40px, 10px) rotate(-14deg);
+    opacity: 0.5;
+  }
+  25% {
+    transform: translate(2px, -14px) rotate(0deg);
+    opacity: 1;
+  }
+  50% {
+    transform: translate(42px, 8px) rotate(14deg);
+    opacity: 0.5;
+  }
+  75% {
+    transform: translate(2px, 22px) rotate(0deg);
+    opacity: 1;
+  }
+  100% {
+    transform: translate(-40px, 10px) rotate(-14deg);
+    opacity: 0.5;
+  }
+}
+
+@keyframes fox-glow {
+  0%,
+  100% {
+    transform: scale(0.85);
+    opacity: 0.6;
+  }
+  50% {
+    transform: scale(1.1);
+    opacity: 1;
+  }
+}
+
+@keyframes src-pulse {
+  0%,
+  100% {
+    opacity: 0.3;
+  }
+  50% {
+    opacity: 1;
+    color: var(--text);
+  }
+}
+
+@keyframes fox-ellipsis {
+  0% {
+    content: "";
+  }
+  25% {
+    content: ".";
+  }
+  50% {
+    content: "..";
+  }
+  75% {
+    content: "...";
+  }
+}
+
+/* Accessibility: users who prefer reduced motion get the scene, held still. */
+@media (prefers-reduced-motion: reduce) {
+  .foxsearch__glow,
+  .foxsearch__fox,
+  .foxsearch__glass,
+  .foxsearch__shadow,
+  .foxsearch__ell::after,
+  .foxsearch__sources li {
+    animation: none;
+  }
+  .foxsearch__ell::after {
+    content: "…";
+  }
+  .foxsearch__sources li {
+    opacity: 0.7;
+  }
 }

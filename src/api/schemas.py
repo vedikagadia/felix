@@ -24,6 +24,7 @@ from ..models import (
     Incident,
     Message,
     NodeHealth,
+    Project,
     Recall,
     Runbook,
 )
@@ -31,6 +32,17 @@ from ..models import (
 
 def _iso(dt: datetime | None) -> str | None:
     return dt.isoformat() if dt is not None else None
+
+
+def project_to_dict(p: Project) -> dict[str, Any]:
+    return {
+        "id": p.id,
+        "display_name": p.display_name,
+        "source_kind": p.source_kind,
+        "source_ref": p.source_ref,
+        "created_at": _iso(p.created_at),
+        "last_synced": _iso(p.last_synced),
+    }
 
 
 def incident_to_dict(inc: Incident) -> dict[str, Any]:

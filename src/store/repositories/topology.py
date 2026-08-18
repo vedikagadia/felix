@@ -41,11 +41,11 @@ class TopologyRepository(BaseRepository):
             cur.execute(
                 """
                 UPSERT INTO service_nodes
-                    (id, name, kind, summary, health_checks)
+                    (id, project, name, kind, summary, health_checks)
                 VALUES
-                    (%s, %s, %s, %s, %s)
+                    (%s, %s, %s, %s, %s, %s)
                 """,
-                (id, name, kind, summary, json.dumps(health_checks or [])),
+                (id, self.project, name, kind, summary, json.dumps(health_checks or [])),
             )
         return id
 
@@ -72,11 +72,11 @@ class TopologyRepository(BaseRepository):
                 """
                 SELECT id
                 FROM service_nodes
-                WHERE name = %s OR lower(name) = lower(%s)
+                WHERE (name = %s OR lower(name) = lower(%s)) AND project = %s
                 ORDER BY (name = %s) DESC, length(name) ASC
                 LIMIT 1
                 """,
-                (service, service, service),
+                (service, service, self.project, service),
             )
             row = cur.fetchone()
         return str(row[0]) if row else None
@@ -85,7 +85,7 @@ class TopologyRepository(BaseRepository):
         """Every known service_nodes.name — the vocabulary the alert text is
         matched against when extracting which service an alert is about."""
         with self.conn.cursor() as cur:
-            cur.execute("SELECT name FROM service_nodes")
+            cur.execute("SELECT name FROM service_nodes WHERE project = %s", (self.project,))
             rows = cur.fetchall()
         return [r[0] for r in rows]
 
@@ -102,9 +102,9 @@ class TopologyRepository(BaseRepository):
                 """
                 SELECT name, health_checks
                 FROM service_nodes
-                WHERE name = ANY(%s)
+                WHERE name = ANY(%s) AND project = %s
                 """,
-                (list(services),),
+                (list(services), self.project),
             )
             rows = cur.fetchall()
         return {r[0]: (r[1] or []) for r in rows}

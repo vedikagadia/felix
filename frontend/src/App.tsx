@@ -1,4 +1,4 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type {
   AlertPayload,
   ChatRequest,
@@ -6,10 +6,17 @@ import type {
   Diagnosis,
   EvidencePacket,
   Incident,
+  Project,
   SessionResponse,
 } from "./api/types";
 import { sendChatStream, usingMock } from "./api/client";
 import { getSession } from "./api/alerts";
+import {
+  DEFAULT_PROJECT,
+  fetchProjects,
+  getActiveProject,
+  setActiveProject,
+} from "./api/projects";
 import { AlertBanner } from "./components/AlertBanner";
 import { AlertComposer } from "./components/AlertComposer";
 import { ChatThread } from "./components/ChatThread";
@@ -19,6 +26,7 @@ import { IncidentsPage } from "./components/IncidentsPage";
 import { LiveMonitoringPage } from "./components/LiveMonitoringPage";
 import { DbOverviewPage } from "./components/DbOverviewPage";
 import { CliPage } from "./components/CliPage";
+import { OnboardPage } from "./components/OnboardPage";
 
 export interface Turn {
   id: number;
@@ -83,9 +91,16 @@ export function App() {
   // hovering a diagnosis citation chip or an evidence card sets it, so the two
   // panes highlight each other. null = nothing focused.
   const [activeCitation, setActiveCitation] = useState<string | null>(null);
-  // Which page is showing: the triage chat, the incident library, or the live
-  // monitoring panel.
-  const [view, setView] = useState<"chat" | "incidents" | "live" | "db" | "cli">("chat");
+  // Which page is showing: the triage chat, the incident library, the live
+  // monitoring panel, DB overview, the CLI, or the onboarding form.
+  const [view, setView] = useState<
+    "chat" | "incidents" | "live" | "db" | "cli" | "onboard"
+  >("chat");
+  // Multi-project: the memory namespace the whole app is scoped to. `projects`
+  // populates the header switcher; `activeProject` is persisted (localStorage)
+  // and threaded onto every scoped API call via api/projects.appendProject.
+  const [projects, setProjects] = useState<Project[]>([]);
+  const [activeProject, setActiveProjectState] = useState<string>(() => getActiveProject());
   // Text to drop into the composer from the library's "Ask AI". `nonce` bumps
   // on every click so re-asking the same incident re-fills the box.
   const [prefill, setPrefill] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
@@ -96,9 +111,76 @@ export function App() {
   const activeTurn = turns.find((t) => t.id === activeId) ?? null;
   const replayTurn = replayId !== null ? (turns.find((t) => t.id === replayId) ?? null) : null;
 
+  // Load the project list once for the header switcher (best-effort — the app
+  // still works scoped to the persisted/default project if this fails).
+  useEffect(() => {
+    fetchProjects()
+      .then(setProjects)
+      .catch(() => {
+        /* leave empty; the switcher falls back to the active project alone */
+      });
+  }, []);
+
   function newIncident() {
     setSessionId(null);
   }
+
+  // Switch the active memory namespace: persist it, re-scope the app, and reset
+  // the in-flight conversation (turns/session belong to the old project). The
+  // project-scoped pages re-key on `activeProject`, so they re-fetch fresh.
+  function switchProject(slug: string) {
+    if (slug === activeProject) return;
+    setActiveProject(slug);
+    setActiveProjectState(slug);
+    setTurns([]);
+    setActiveId(null);
+    setSessionId(null);
+    setReplayId(null);
+    setActiveCitation(null);
+  }
+
+  // After a successful onboard: refresh the switcher, make sure the new project
+  // is listed (mock/back-end race), switch to it, and land on Triage.
+  async function handleOnboarded(slug: string, displayName: string) {
+    let list = projects;
+    try {
+      list = await fetchProjects();
+    } catch {
+      /* keep the current list */
+    }
+    if (!list.some((p) => p.id === slug)) {
+      list = [
+        ...list,
+        {
+          id: slug,
+          display_name: displayName,
+          source_kind: null,
+          source_ref: null,
+          created_at: null,
+          last_synced: null,
+        },
+      ];
+    }
+    setProjects(list);
+    switchProject(slug);
+    setView("chat");
+  }
+
+  // The switcher options always include the active project, even if the list
+  // fetch failed or it isn't (yet) in the returned list.
+  const projectOptions: Project[] = projects.some((p) => p.id === activeProject)
+    ? projects
+    : [
+        ...projects,
+        {
+          id: activeProject,
+          display_name: activeProject === DEFAULT_PROJECT ? "Checkout demo (sample)" : activeProject,
+          source_kind: null,
+          source_ref: null,
+          created_at: null,
+          last_synced: null,
+        },
+      ];
 
   // "Ask AI" from the incident library: jump to the chat, start a fresh
   // conversation, and pre-fill the composer with this incident's symptoms so
@@ -261,7 +343,28 @@ export function App() {
           >
             CLI
           </button>
+          <button
+            type="button"
+            className={`app__navlink ${view === "onboard" ? "is-active" : ""}`}
+            onClick={() => setView("onboard")}
+          >
+            Onboard
+          </button>
         </nav>
+        <label className="app__project" title="Active project — scopes all of felix's memory">
+          <span className="app__projectlabel">project</span>
+          <select
+            className="app__projectsel"
+            value={activeProject}
+            onChange={(e) => switchProject(e.target.value)}
+          >
+            {projectOptions.map((p) => (
+              <option key={p.id} value={p.id}>
+                {p.display_name}
+              </option>
+            ))}
+          </select>
+        </label>
         {usingMock && (
           <span className="badge badge--mock" title="Set VITE_API_URL to use a real backend">
             mock mode
@@ -271,11 +374,12 @@ export function App() {
 
       {view === "incidents" ? (
         <main className="app__body app__body--single">
-          <IncidentsPage onAskAI={askAI} />
+          {/* Re-key on the project so the library re-fetches when it changes. */}
+          <IncidentsPage key={activeProject} onAskAI={askAI} />
         </main>
       ) : view === "live" ? (
         <main className="app__body app__body--single">
-          <LiveMonitoringPage onAskFelix={askFelixAbout} />
+          <LiveMonitoringPage key={activeProject} onAskFelix={askFelixAbout} project={activeProject} />
         </main>
       ) : view === "db" ? (
         <main className="app__body app__body--single">
@@ -285,9 +389,14 @@ export function App() {
         <main className="app__body app__body--single">
           <CliPage />
         </main>
+      ) : view === "onboard" ? (
+        <main className="app__body app__body--single">
+          <OnboardPage onOnboarded={handleOnboarded} />
+        </main>
       ) : (
         <>
-          <AlertBanner onSelect={openAlert} activeSessionId={sessionId} />
+          {/* Re-key on the project so the alert poll re-subscribes per namespace. */}
+          <AlertBanner key={activeProject} onSelect={openAlert} activeSessionId={sessionId} />
 
           <main className="app__body">
             <section className="chat">

@@ -11,6 +11,7 @@
  */
 
 import { usingMock } from "./client";
+import { appendProject } from "./projects";
 import type { AlertPayload, SessionResponse } from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL as string | undefined;
@@ -29,7 +30,7 @@ export function subscribeToAlerts(
 
   async function poll(): Promise<void> {
     try {
-      const res = await fetch(`${API_URL}/alerts`);
+      const res = await fetch(appendProject(`${API_URL}/alerts`));
       if (!res.ok) return;
       const body = (await res.json()) as { alerts?: AlertPayload[] };
       if (!stopped) onNewAlerts(body.alerts ?? []);
@@ -56,7 +57,7 @@ export async function getSession(id: string): Promise<SessionResponse> {
   if (usingMock) {
     throw new Error("Cannot load a session in mock mode (VITE_API_URL is unset).");
   }
-  const res = await fetch(`${API_URL}/sessions/${id}`);
+  const res = await fetch(appendProject(`${API_URL}/sessions/${id}`));
   if (!res.ok) {
     throw new Error(`Backend returned ${res.status} ${res.statusText} for session ${id}.`);
   }

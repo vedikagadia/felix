@@ -26,7 +26,7 @@ def client():
 
 
 class _FakeActiveRepo:
-    def __init__(self, conn):
+    def __init__(self, conn, project="sample"):
         pass
 
     def list_alerts(self, source="cdc", status="open"):
@@ -60,7 +60,7 @@ class _FakeActiveRepo:
 
 
 class _FakeIncidentRepo:
-    def __init__(self, conn):
+    def __init__(self, conn, project="sample"):
         pass
 
     def get(self, incident_id):

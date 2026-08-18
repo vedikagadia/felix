@@ -15,6 +15,22 @@ from datetime import datetime
 from typing import Generic, TypeVar
 
 
+# ── tenancy ──────────────────────────────────────────────────────────────────
+
+
+@dataclass
+class Project:
+    """One onboarded project (tenant). Every memory row carries this project's
+    `id` (slug); recall is always scoped to one. The built-in demo is 'sample'."""
+
+    id: str
+    display_name: str
+    source_kind: str = "path"  # 'path' | 'git' | 'builtin'
+    source_ref: str | None = None
+    created_at: datetime | None = None
+    last_synced: datetime | None = None
+
+
 # ── memory-source records ────────────────────────────────────────────────────
 
 

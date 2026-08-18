@@ -14,6 +14,7 @@
  */
 
 import { usingMock } from "./client";
+import { appendProject } from "./projects";
 import type { MetricConfig, MetricSample } from "./types";
 
 const API_URL = import.meta.env.VITE_API_URL as string | undefined;
@@ -36,7 +37,7 @@ export async function fetchMetricConfig(): Promise<MetricConfig> {
 export async function fetchRecentMetrics(limit = 120): Promise<MetricSample[]> {
   if (usingMock) return mockRecentMetrics();
 
-  const res = await fetch(`${API_URL}/metrics/recent?limit=${limit}`);
+  const res = await fetch(appendProject(`${API_URL}/metrics/recent?limit=${limit}`));
   if (!res.ok) throw new Error(`Backend returned ${res.status} ${res.statusText}`);
   const body = (await res.json()) as { samples?: MetricSample[] };
   return body.samples ?? [];
@@ -53,7 +54,7 @@ export function subscribeToMetrics(
 ): () => void {
   if (usingMock) return mockSubscribeToMetrics(onSample, onStatus);
 
-  const es = new EventSource(`${API_URL}/metrics/stream`);
+  const es = new EventSource(appendProject(`${API_URL}/metrics/stream`));
   es.addEventListener("open", () => onStatus?.(true));
   es.addEventListener("sample", (ev) => {
     try {
