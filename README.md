@@ -67,17 +67,7 @@ multi-turn conversation) and an **audit log** (`agent_actions`).
 
 **The reasoning loop.** When an alert comes in, felix works through these steps:
 
-```mermaid
-flowchart TD
-    A[Alert] --> B[Recall relevant memory]
-    B --> C[Pin down where the symptom<br/>surfaced in the code]
-    C --> D[Ask the model to diagnose]
-    D --> E[Check the answer only cites<br/>evidence it was actually given]
-    E --> F[Save the diagnosis + fix steps<br/>in one transaction]
-    F --> G{A human confirms<br/>it was helpful?}
-    G -->|👍 yes| H[Becomes recallable<br/>for future alerts]
-    G -->|👎 no| I[Kept out of recall]
-```
+![The reasoning loop](assets/reasoning-loop.png)
 
 That last step is how felix stays trustworthy: a live diagnosis is saved
 **without an embedding**, so it's invisible to recall until a human confirms it —
@@ -134,18 +124,7 @@ end to end. (See [SETUP.md §7](SETUP.md).)
 
 **The big picture — how felix turns an alert into an answer that compounds:**
 
-```mermaid
-flowchart LR
-    A[Alert<br/>symptom shows up] --> B[Recall by meaning<br/>past incidents · docs · merges<br/>runbooks · code graph · live health]
-    B --> C[Reason<br/>trace symptom to cause,<br/>diagnose]
-    C --> D[Answer<br/>root cause + fix steps,<br/>each citing its evidence]
-    D --> E[Learn<br/>a human ✔ confirms →<br/>the diagnosis becomes recallable]
-    E -.feeds future recall.-> B
-    M[(CockroachDB<br/>the one memory)]
-    B <--> M
-    C <--> M
-    E --> M
-```
+![How felix turns an alert into an answer that compounds](assets/architecture-loop.png)
 
 Memory is the loop, not a side store: every diagnosis a human confirms flows
 back into the same CockroachDB the next alert recalls from, so felix gets sharper
@@ -154,52 +133,7 @@ over time.
 **Information flow through the app** — each panel over the FastAPI backend and
 the one CockroachDB behind it:
 
-```mermaid
-flowchart TD
-    subgraph UI["Web UI · React + Vite + TS"]
-        T[🩺 Triage]
-        L[📚 Incident library]
-        Mon[📈 Live monitoring]
-        DB[🗄️ DB overview]
-        CLI[🖥️ CLI terminal]
-    end
-
-    subgraph API["FastAPI backend · src/api"]
-        Chat["/chat · /chat/stream"]
-        Inc["/incidents · search · feedback"]
-        Met["/metrics · stream · config"]
-        Dbx["/db · overview · plan · execute"]
-        Cliws["/cli/ws"]
-    end
-
-    subgraph SVC["Service layer · src/service"]
-        EG[EvidenceGatherer]
-        Diag[IncidentDiagnoser]
-        Watch[MetricWatcher]
-    end
-
-    CRDB[(CockroachDB<br/>VECTOR · recursive CTE · CDC · MCP)]
-    LLM[LLM + embedder<br/>Gemini + bge · or Bedrock]
-    MCP[Managed MCP Server]
-    Ccloud[ccloud CLI]
-
-    T --> Chat --> Diag
-    L --> Inc --> EG
-    Mon --> Met
-    DB --> Dbx --> MCP
-    CLI --> Cliws --> Ccloud
-
-    Diag --> EG
-    EG -->|recall| CRDB
-    EG --> LLM
-    Diag -->|write-back| CRDB
-    Diag --> LLM
-    Met -->|CDC changefeed| CRDB
-    Watch -->|CDC changefeed| CRDB
-    Watch --> Diag
-    MCP <--> CRDB
-    Ccloud <--> CRDB
-```
+![Information flow through the app](assets/architecture-flow.png)
 
 Layered under the hood: `cli/api → service → store/clients → models/config`.
 Clients (embedder, LLM, MCP) are lazy-imported and swappable behind env vars.

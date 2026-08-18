@@ -1,0 +1,86 @@
+digraph felix_flow {
+  rankdir=TB;
+  bgcolor="white";
+  fontname="Helvetica";
+  labelloc="t";
+  fontsize=20;
+  label=<<b>Information flow through the app</b>>;
+  compound=true;
+  nodesep=0.35;
+  ranksep=0.6;
+
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=12,
+        penwidth=0, margin="0.18,0.12", fontcolor="white"];
+  edge [fontname="Helvetica", fontsize=10, color="#5b6472", penwidth=1.5,
+        arrowsize=0.8];
+
+  // --- UI layer ---
+  subgraph cluster_ui {
+    label=<<b>Web UI · React + Vite + TS</b>>;
+    fontsize=13; color="#3a7bd5"; style="rounded"; penwidth=1.6;
+    fontcolor="#2c5aa0"; bgcolor="#eef4fc";
+    T   [label="🩺 Triage",           fillcolor="#3a7bd5"];
+    L   [label="📚 Incident library",  fillcolor="#3a7bd5"];
+    Mon [label="📈 Live monitoring",   fillcolor="#3a7bd5"];
+    DB  [label="🗄️ DB overview",       fillcolor="#3a7bd5"];
+    CLI [label="🖥️ CLI terminal",      fillcolor="#3a7bd5"];
+  }
+
+  // --- API layer ---
+  subgraph cluster_api {
+    label=<<b>FastAPI backend · src/api</b>>;
+    fontsize=13; color="#7048b6"; style="rounded"; penwidth=1.6;
+    fontcolor="#5a3a94"; bgcolor="#f2edfa";
+    Chat  [label="/chat · /chat/stream",          fillcolor="#7048b6"];
+    Inc   [label="/incidents · search · feedback", fillcolor="#7048b6"];
+    Met   [label="/metrics · stream · config",     fillcolor="#7048b6"];
+    Dbx   [label="/db · overview · plan · execute", fillcolor="#7048b6"];
+    Cliws [label="/cli/ws",                         fillcolor="#7048b6"];
+  }
+
+  // --- Service layer ---
+  subgraph cluster_svc {
+    label=<<b>Service layer · src/service</b>>;
+    fontsize=13; color="#2fa36b"; style="rounded"; penwidth=1.6;
+    fontcolor="#1f7a4f"; bgcolor="#eaf6f0";
+    EG    [label="EvidenceGatherer",   fillcolor="#2fa36b"];
+    Diag  [label="IncidentDiagnoser",  fillcolor="#2fa36b"];
+    Watch [label="MetricWatcher",      fillcolor="#2fa36b"];
+  }
+
+  // --- backing stores / externals ---
+  CRDB   [label="CockroachDB\nVECTOR · recursive CTE · CDC · MCP",
+          shape=cylinder, fillcolor="#1b2a4a", fontsize=12, margin="0.25,0.16"];
+  LLM    [label="LLM + embedder\nGemini + bge · or Bedrock", fillcolor="#e0533d"];
+  MCP    [label="Managed MCP Server", fillcolor="#d99a1c"];
+  Ccloud [label="ccloud CLI",         fillcolor="#d99a1c"];
+
+  // UI -> API
+  T   -> Chat;
+  L   -> Inc;
+  Mon -> Met;
+  DB  -> Dbx;
+  CLI -> Cliws;
+
+  // API -> service / externals
+  Chat  -> Diag;
+  Inc   -> EG;
+  Dbx   -> MCP;
+  Cliws -> Ccloud;
+
+  // service internals
+  Diag -> EG;
+  EG   -> CRDB [label="recall", color="#2fa36b", fontcolor="#1f7a4f"];
+  EG   -> LLM;
+  Diag -> CRDB [label="write-back", color="#e0533d", fontcolor="#b23a28"];
+  Diag -> LLM;
+
+  // CDC changefeed
+  Met   -> CRDB [label="CDC changefeed", color="#3a7bd5", fontcolor="#2c5aa0", style=dashed];
+  Watch -> CRDB [label="CDC changefeed", color="#3a7bd5", fontcolor="#2c5aa0", style=dashed];
+  Watch -> Diag;
+
+  // externals <-> DB
+  MCP    -> CRDB [dir=both, color="#d99a1c", style=dotted];
+  Ccloud -> CRDB [dir=both, color="#d99a1c", style=dotted];
+}

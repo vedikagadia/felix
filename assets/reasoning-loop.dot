@@ -1,0 +1,30 @@
+digraph reasoning_loop {
+  rankdir=LR;
+  bgcolor="white";
+  fontname="Helvetica";
+  labelloc="t";
+  fontsize=19;
+  label=<<b>The reasoning loop — from alert to a diagnosis felix can trust</b>>;
+  nodesep=0.3;
+  ranksep=0.55;
+
+  node [shape=box, style="rounded,filled", fontname="Helvetica", fontsize=12.5,
+        penwidth=0, margin="0.2,0.15", fontcolor="white"];
+  edge [fontname="Helvetica", fontsize=10.5, color="#5b6472", penwidth=1.6,
+        arrowsize=0.8];
+
+  A [label="Alert", fillcolor="#e0533d"];
+  B [label="Recall relevant\nmemory", fillcolor="#3a7bd5"];
+  C [label="Pin down where the\nsymptom surfaced\nin the code", fillcolor="#3a7bd5"];
+  D [label="Ask the model\nto diagnose", fillcolor="#7048b6"];
+  E [label="Check the answer only\ncites evidence it was\nactually given", fillcolor="#7048b6"];
+  F [label="Save diagnosis + fix\nsteps in one transaction", fillcolor="#2fa36b"];
+  G [label="A human confirms\nit was helpful?", shape=diamond, fillcolor="#d99a1c",
+     margin="0.05,0.05"];
+  H [label="Becomes recallable\nfor future alerts", fillcolor="#2fa36b"];
+  I [label="Kept out of recall", fillcolor="#8a94a6"];
+
+  A -> B -> C -> D -> E -> F -> G;
+  G -> H [label="👍 yes", color="#2fa36b", fontcolor="#1f7a4f"];
+  G -> I [label="👎 no",  color="#e0533d", fontcolor="#b23a28"];
+}
