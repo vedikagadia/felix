@@ -31,7 +31,14 @@ import psycopg
 
 from ..clients.embedder import Embedder, get_embedder
 from ..store.connection import apply_schema, get_conn
-from ..store.repositories import ChangeRepository, DocRepository, GraphRepository, IncidentRepository
+from ..store.repositories import (
+    ChangeRepository,
+    DocRepository,
+    GraphRepository,
+    IncidentRepository,
+    RunbookRepository,
+    TopologyRepository,
+)
 from .parser import parse_project
 
 # repo-root-relative defaults (this file is src/seed/loader.py)
@@ -48,7 +55,11 @@ def _seed_uuid(stable_id: str) -> str:
     return str(uuid.uuid5(SEED_NS, stable_id))
 
 
-def _load_json(path: Path) -> list[dict[str, Any]]:
+def _load_json(path: Path) -> Any:
+    """Parse a seed JSON file. Most corpora are top-level lists
+    (incidents/docs/changes); topology.json is a top-level object
+    ({"nodes": [...], "edges": [...]}). json.load returns whichever shape the
+    file holds — the caller knows which it expects."""
     with path.open() as f:
         return json.load(f)
 
@@ -61,6 +72,8 @@ class Seeder:
         self.docs = DocRepository(conn)
         self.changes = ChangeRepository(conn)
         self.graph = GraphRepository(conn)
+        self.topology = TopologyRepository(conn)
+        self.runbooks = RunbookRepository(conn)
 
     # ── individual loaders ────────────────────────────────────────────────────
 
@@ -81,6 +94,49 @@ class Seeder:
         for e in edges:
             self.graph.upsert_edge(src_id=e["src_id"], dst_id=e["dst_id"], kind=e["kind"])
         return len(nodes), len(edges)
+
+    def load_topology(self, path: Path | None = None) -> tuple[int, int]:
+        """Load the service-topology graph (service_nodes/service_edges) and
+        UPSERT it — mirrors load_code_graph. Node ids are deterministic uuid5 of
+        the seed's stable string id (e.g. 'svc-checkout-service'), so the load is
+        idempotent with no truncate needed. Edges resolve their src/dst service
+        names to node ids via a name->stable-id map built while loading nodes.
+        No embeddings (the topology is traversed, never vector-searched)."""
+        data = _load_json(path or SEED_DIR / "topology.json")
+        name_to_id: dict[str, str] = {}
+        for n in data.get("nodes", []):
+            node_id = _seed_uuid(n["id"])
+            name_to_id[n["name"]] = node_id
+            self.topology.upsert_node(
+                id=node_id,
+                name=n["name"],
+                kind=n.get("kind", "service"),
+                summary=n.get("summary"),
+                health_checks=n.get("health_checks"),
+            )
+        edges = data.get("edges", [])
+        for e in edges:
+            self.topology.upsert_edge(
+                src_id=name_to_id[e["src"]],
+                dst_id=name_to_id[e["dst"]],
+                kind=e.get("kind", "depends_on"),
+            )
+        return len(data.get("nodes", [])), len(edges)
+
+    def load_runbooks(self, path: Path | None = None) -> int:
+        rows = _load_json(path or SEED_DIR / "runbooks.json")
+        for r in rows:
+            text = f"{r['title']}\n{r['symptoms']}"
+            self.runbooks.insert(
+                id=_seed_uuid(r["id"]),
+                title=r["title"],
+                symptoms=r["symptoms"],
+                service=r.get("service"),
+                tags=r.get("tags"),
+                embedding=self.embedder.embed(text),
+                steps=r.get("steps"),
+            )
+        return len(rows)
 
     def load_incidents(self, path: Path | None = None) -> int:
         rows = _load_json(path or SEED_DIR / "incidents.json")
@@ -136,22 +192,27 @@ class Seeder:
     def truncate(self) -> None:
         """Clear the seeded tables (not code_nodes/edges — those UPSERT cleanly)."""
         with self.conn.cursor() as cur:
-            # resolution_steps cascades from incidents
+            # resolution_steps cascades from incidents; runbook_steps from runbooks
             cur.execute("DELETE FROM incidents")
             cur.execute("DELETE FROM doc_chunks")
             cur.execute("DELETE FROM code_changes")
+            cur.execute("DELETE FROM runbooks")
 
     def seed_all(self, truncate: bool = False) -> dict[str, int]:
         """Full seed run against this Seeder's connection. Returns per-source counts."""
         if truncate:
             self.truncate()
         n_nodes, n_edges = self.load_code_graph()
+        n_svc_nodes, n_svc_edges = self.load_topology()
         return {
             "code_nodes": n_nodes,
             "code_edges": n_edges,
+            "service_nodes": n_svc_nodes,
+            "service_edges": n_svc_edges,
             "incidents": self.load_incidents(),
             "doc_chunks": self.load_docs(),
             "code_changes": self.load_code_changes(),
+            "runbooks": self.load_runbooks(),
         }
 
 

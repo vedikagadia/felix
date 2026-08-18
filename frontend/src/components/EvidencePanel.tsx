@@ -1,6 +1,15 @@
 import { useEffect, useRef, useState } from "react";
 import type { Turn } from "../App";
-import type { CodeChange, DocChunk, EvidencePacket, GraphHit, Incident, Recall } from "../api/types";
+import type {
+  CodeChange,
+  DocChunk,
+  EvidencePacket,
+  GraphHit,
+  Incident,
+  NodeHealth,
+  Recall,
+  Runbook,
+} from "../api/types";
 import { relevancePct } from "../lib/relevance";
 
 export function EvidencePanel({
@@ -54,6 +63,7 @@ export function EvidencePanel({
       packet={evidence}
       citedIncidentIds={cited?.cited_incident_ids}
       citedChangeIds={cited?.cited_change_ids}
+      evidenceOrder={cited?.evidence_order}
       activeCitation={activeCitation}
       onCitationFocus={onCitationFocus}
     />
@@ -72,16 +82,29 @@ function RelevanceBar({ distance }: { distance: number }) {
   );
 }
 
+// The evidence classes, in the panel's DEFAULT order — used when the model
+// didn't rank, and to append any classes it left out of `evidence_order`.
+const DEFAULT_ORDER = [
+  "incidents",
+  "docs",
+  "changes",
+  "topology_health",
+  "upstream",
+  "runbooks",
+] as const;
+
 function EvidenceBody({
   packet,
   citedIncidentIds,
   citedChangeIds,
+  evidenceOrder,
   activeCitation,
   onCitationFocus,
 }: {
   packet: EvidencePacket;
   citedIncidentIds?: string[];
   citedChangeIds?: string[];
+  evidenceOrder?: string[];
   activeCitation: string | null;
   onCitationFocus: (id: string | null) => void;
 }) {
@@ -89,6 +112,10 @@ function EvidenceBody({
   // the highlights simply light up once the response lands.
   const citedInc = new Set(citedIncidentIds ?? []);
   const citedChg = new Set(citedChangeIds ?? []);
+  // Optional on older payloads / mock turns — default to empty so the sections
+  // render their empty state rather than crashing.
+  const topology = packet.topology_health ?? [];
+  const runbooks = packet.runbooks ?? [];
 
   // The evidence→diagnosis link + diagnosis→evidence scroll target: when a
   // citation is focused (hovered chip in the card, or hovered card here), scroll
@@ -112,11 +139,13 @@ function EvidenceBody({
     onMouseLeave: () => onCitationFocus(null),
   });
 
-  return (
-    <div className="evidence__body">
-      <h3>Evidence for this alert</h3>
-
+  // One entry per evidence class, keyed by the same names the model ranks in
+  // `evidence_order`. Rendered in the model's order when it ranked, else the
+  // default order — so the most-useful class for THIS alert sits on top.
+  const sections: Record<string, React.ReactNode> = {
+    incidents: (
       <Section
+        key="incidents"
         title="Similar past incidents"
         dot="inc"
         count={packet.incidents.length}
@@ -126,14 +155,17 @@ function EvidenceBody({
           <IncidentCard key={r.item.id} r={r} cited={citedInc.has(r.item.id)} {...focusProps(r.item.id)} />
         ))}
       </Section>
-
-      <Section title="Relevant docs" dot="doc" count={packet.docs.length} emptyLabel="none recalled">
+    ),
+    docs: (
+      <Section key="docs" title="Relevant docs" dot="doc" count={packet.docs.length} emptyLabel="none recalled">
         {packet.docs.map((r) => (
           <DocCard key={r.item.id} r={r} />
         ))}
       </Section>
-
+    ),
+    changes: (
       <Section
+        key="changes"
         title="Recent code changes"
         dot="chg"
         count={packet.changes.length}
@@ -143,8 +175,23 @@ function EvidenceBody({
           <ChangeCard key={r.item.id} r={r} cited={citedChg.has(r.item.id)} {...focusProps(r.item.id)} />
         ))}
       </Section>
-
+    ),
+    topology_health: (
       <Section
+        key="topology_health"
+        title="Live downstream health"
+        dot="metric"
+        count={topology.length}
+        emptyLabel="no breached dependency — nothing correlated"
+      >
+        {topology.map((nh) => (
+          <NodeHealthCard key={`${nh.service}::${nh.metric}::${nh.intent}`} nh={nh} />
+        ))}
+      </Section>
+    ),
+    upstream: (
+      <Section
+        key="upstream"
         title="Upstream call trace"
         dot="graph"
         count={packet.upstream.length}
@@ -152,6 +199,40 @@ function EvidenceBody({
       >
         <CallTrace hits={packet.upstream} />
       </Section>
+    ),
+    runbooks: (
+      <Section
+        key="runbooks"
+        title="Runbooks recalled"
+        dot="doc"
+        count={runbooks.length}
+        emptyLabel="none recalled"
+      >
+        {runbooks.map((r) => (
+          <RunbookCard key={r.item.id} r={r} />
+        ))}
+      </Section>
+    ),
+  };
+
+  // Model's ranked classes first (dropping any unknown names), then any class it
+  // didn't mention, in the default order — so every section still renders once.
+  const ranked = (evidenceOrder ?? []).filter((k) => k in sections);
+  const order = [...ranked, ...DEFAULT_ORDER.filter((k) => !ranked.includes(k))];
+  const modelRanked = ranked.length > 0;
+
+  return (
+    <div className="evidence__body">
+      <h3>
+        Evidence for this alert
+        {modelRanked && (
+          <span className="evidence__ranked" title="Sections ordered by how much each informed the diagnosis">
+            ranked by relevance
+          </span>
+        )}
+      </h3>
+
+      {order.map((key) => sections[key])}
     </div>
   );
 }
@@ -406,6 +487,86 @@ function SourceBlock({ source }: { source: string }) {
         </span>
       ))}
     </pre>
+  );
+}
+
+/**
+ * One breached downstream health check — the live-metric-querying proof. Shows
+ * which signal breached (`intent` over `metric`), the observed value vs. the
+ * threshold it crossed, and how many live samples backed it (so it reads as a
+ * real query, not a static flag).
+ */
+function NodeHealthCard({ nh }: { nh: NodeHealth }) {
+  // p99/avg/error_rate are the distribution intents whose values are ms/fraction;
+  // format error_rate as a %, latency intents with a unit, latest bare.
+  const isRate = nh.intent === "error_rate";
+  const fmt = (v: number) =>
+    isRate ? `${(v * 100).toFixed(1)}%` : nh.metric.endsWith("_ms") ? `${v.toFixed(0)}ms` : v.toFixed(1);
+
+  return (
+    <article className="card card--breach">
+      <header className="card__head">
+        <span className="card__title">{nh.service}</span>
+        <span className="tag tag--breach">⚠ breached</span>
+      </header>
+      <p className="card__meta">
+        <span className="tag tag--muted">{nh.intent}</span>
+        <span className="tag tag--muted">{nh.metric}</span>
+        <span className="tag tag--muted">{nh.sample_count} samples</span>
+      </p>
+      <p className="nh__reading">
+        <span className="nh__observed">{fmt(nh.observed)}</span>
+        <span className="nh__cmp">≥</span>
+        <span className="nh__threshold">{fmt(nh.threshold)}</span>
+        <span className="nh__label">
+          {nh.intent}({nh.metric}) over the last {nh.sample_count} live samples
+        </span>
+      </p>
+    </article>
+  );
+}
+
+/** A curated runbook recalled by meaning (vector search on its trigger text). */
+function RunbookCard({ r }: { r: Recall<Runbook> }) {
+  const [open, setOpen] = useState(false);
+  const rb = r.item;
+  const steps = rb.steps ?? [];
+
+  return (
+    <article className="card">
+      <header className="card__head">
+        <span className="card__title">{rb.title}</span>
+        <RelevanceBar distance={r.distance} />
+      </header>
+      <p className="card__meta">
+        <span className="tag tag--muted">runbook</span>
+        {rb.service && <span className="tag tag--muted">{rb.service}</span>}
+        {(rb.tags ?? []).map((t) => (
+          <span key={t} className="tag tag--muted">
+            {t}
+          </span>
+        ))}
+      </p>
+      <p className="card__body">{rb.symptoms}</p>
+      {steps.length > 0 && (
+        <>
+          {open && (
+            <div className="card__details">
+              <ol className="steps steps--compact">
+                {steps.map((s) => (
+                  <li key={s.step_order} className="steps__item">
+                    <span className="steps__action">{s.action}</span>
+                    {s.command && <code className="steps__command">{s.command}</code>}
+                    {s.outcome && <span className="steps__outcome">→ {s.outcome}</span>}
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+          <ExpandToggle open={open} onClick={() => setOpen((v) => !v)} label={`Show steps (${steps.length})`} />
+        </>
+      )}
+    </article>
   );
 }
 

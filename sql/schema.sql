@@ -176,3 +176,75 @@ CREATE TABLE IF NOT EXISTS metrics (
     labels   JSONB                          -- optional dims, e.g. {"attempt": 3}
 );
 CREATE INDEX IF NOT EXISTS metrics_service_metric_ts_idx ON metrics (service, metric, ts DESC);
+
+-- ── Service topology: the coarse service-dependency graph (Layer 2) ─────────
+-- A SERVICE-level mirror sitting above the code graph: nodes are whole services
+-- (checkout-service, payment-gateway, …) and edges are `depends_on` relationships
+-- directed src -> dst (`src` depends on `dst`). Distinct from code_nodes/code_edges
+-- (code-symbol granularity) — this is the topology a live health breach is
+-- correlated against ("what does the breaching service reach downstream?").
+-- Node ids are deterministic (uuid5 of the service name) so re-syncs UPSERT in
+-- place instead of duplicating, exactly like code_nodes.
+CREATE TABLE IF NOT EXISTS service_nodes (
+    id            UUID PRIMARY KEY,                       -- deterministic (uuid5), set by the seeder
+    name          STRING NOT NULL,                        -- the service name (matches metrics.service)
+    kind          STRING NOT NULL DEFAULT 'service',      -- service | datastore | external
+    summary       STRING,                                 -- optional one-line description
+    health_checks JSONB NOT NULL DEFAULT '[]'::JSONB,     -- array of {metric,intent,threshold} — see below
+    updated_at    TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS service_nodes_name_idx ON service_nodes (name);
+
+-- service_nodes.health_checks is a JSON ARRAY (top level is never an object).
+-- Each element: {"metric": <matches metrics.metric>,
+--                "intent": "p99"|"avg"|"error_rate"|"latest",
+--                "threshold": <number>}. psycopg returns it already-decoded
+-- (list[dict]) — do NOT json.loads it in the service layer (mirrors metrics.labels).
+-- Treat NULL/absent as []. `threshold` is the per-node override; when a check
+-- omits it, resolve via Settings.metric_alert_thresholds.get(metric, default).
+
+CREATE TABLE IF NOT EXISTS service_edges (
+    src_id  UUID NOT NULL REFERENCES service_nodes(id) ON DELETE CASCADE,
+    dst_id  UUID NOT NULL REFERENCES service_nodes(id) ON DELETE CASCADE,
+    kind    STRING NOT NULL DEFAULT 'depends_on',         -- src depends_on dst
+    PRIMARY KEY (src_id, dst_id, kind)
+);
+
+-- Downstream dependency set from a service (mirrors the code-graph blast radius):
+--   WITH RECURSIVE reach(id, depth) AS (
+--     SELECT id, 0 FROM service_nodes WHERE id = $start
+--     UNION ALL
+--     SELECT e.dst_id, r.depth+1 FROM service_edges e JOIN reach r ON e.src_id = r.id
+--       WHERE r.depth < $k
+--   ) SELECT MIN(r.depth), n.* FROM reach r JOIN service_nodes n ON n.id = r.id GROUP BY n.id, ...;
+
+-- ── Curated procedure memory: runbooks ──────────────────────────────────────
+-- Authored, reusable playbooks recalled by MEANING (vector search on the
+-- trigger text), distinct from `incidents` (episodic history). Mirrors the
+-- incidents/resolution_steps idiom exactly: a parent row embedded on
+-- (title + symptoms) + an ordered child-steps table. `symptoms` is the trigger
+-- text the alert is matched against.
+CREATE TABLE IF NOT EXISTS runbooks (
+    id          UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    title       STRING NOT NULL,
+    symptoms    STRING NOT NULL,           -- the trigger "what's happening" (searchable)
+    service     STRING,
+    tags        STRING[],
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now(),
+    embedding   VECTOR(1024)               -- Titan V2 of (title + symptoms)
+);
+CREATE VECTOR INDEX IF NOT EXISTS runbooks_embedding_idx ON runbooks (embedding);
+
+-- Ordered steps of a runbook — the reusable procedure felix presents. Child
+-- table (not JSONB) so steps stay queryable across runbooks, mirroring
+-- resolution_steps' design (same DEFAULTs, ON DELETE CASCADE, UNIQUE ordering).
+CREATE TABLE IF NOT EXISTS runbook_steps (
+    id           UUID PRIMARY KEY DEFAULT gen_random_uuid(),
+    runbook_id   UUID NOT NULL REFERENCES runbooks(id) ON DELETE CASCADE,
+    step_order   INT NOT NULL,             -- 1, 2, 3 … order the steps are applied
+    action       STRING NOT NULL,          -- plain-English what to do
+    command      STRING,                   -- the exact command, if any
+    outcome      STRING,                   -- what it achieves
+    UNIQUE (runbook_id, step_order)
+);
+CREATE INDEX IF NOT EXISTS runbook_steps_runbook_idx ON runbook_steps (runbook_id, step_order);

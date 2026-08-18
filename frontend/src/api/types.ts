@@ -70,6 +70,46 @@ export interface CodeNode {
   last_commit?: string | null;
 }
 
+export interface RunbookStep {
+  step_order: number;
+  action: string;
+  command: string | null;
+  outcome: string | null;
+}
+
+/**
+ * A curated, reusable playbook recalled by MEANING (vector search on its trigger
+ * text), distinct from an episodic `Incident`. Mirrors Incident: a parent row +
+ * ordered child steps. Surfaced in the evidence panel as "Runbooks recalled".
+ */
+export interface Runbook {
+  id: string;
+  title: string;
+  symptoms: string;
+  service?: string | null;
+  tags?: string[];
+  created_at?: string | null;
+  steps?: RunbookStep[];
+}
+
+/**
+ * The health of ONE downstream service node against ONE configured check —
+ * felix's live-metric-querying proof. When an alert names a known service, felix
+ * walks that service's downstream topology and queries each dependency's live
+ * metrics; a NodeHealth records which signal breached (`intent` over `metric`),
+ * the `observed` value vs. the `threshold` it crossed, and how many `sample`s
+ * backed it. Only breached checks reach the frontend.
+ */
+export interface NodeHealth {
+  service: string;
+  metric: string;
+  intent: "p99" | "avg" | "error_rate" | "latest";
+  observed: number;
+  threshold: number;
+  breached: boolean;
+  sample_count: number;
+}
+
 // ── recall wrappers ─────────────────────────────────────────────────────────
 
 /** A recalled record plus its L2 distance from the query vector (lower = closer). */
@@ -93,6 +133,14 @@ export interface EvidencePacket {
   docs: Recall<DocChunk>[];
   changes: Recall<CodeChange>[];
   upstream: GraphHit[];
+  /**
+   * Breached downstream health checks (the live-metric-querying proof) — present
+   * when the alert named a known service and a dependency was unhealthy. Optional
+   * so older payloads / mock turns without it still typecheck.
+   */
+  topology_health?: NodeHealth[];
+  /** Curated runbooks recalled by the alert text (vector search). */
+  runbooks?: Recall<Runbook>[];
 }
 
 /**
@@ -107,6 +155,14 @@ export interface Diagnosis {
   cited_change_ids: string[];
   confidence: number | null;
   incident_id: string | null;
+  /**
+   * The model's ranking of the evidence CLASSES by how much each informed this
+   * diagnosis, most-useful first (a subset of "incidents" | "docs" | "changes" |
+   * "topology_health" | "upstream" | "runbooks"). The evidence panel orders its
+   * sections by this so the layout adapts per alert. Absent/empty → the panel
+   * uses its default order.
+   */
+  evidence_order?: string[];
 }
 
 export interface ProposedStep {
@@ -127,6 +183,9 @@ export interface Message {
   cited_incident_ids: string[];
   cited_change_ids: string[];
   incident_id: string | null;
+  /** Same evidence-class ranking a Diagnosis carries — a follow-up still recalls
+   * memory, so the panel re-orders its sections per turn. Absent/empty → default. */
+  evidence_order?: string[];
 }
 
 // ── request / response envelope ─────────────────────────────────────────────

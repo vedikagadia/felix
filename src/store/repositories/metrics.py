@@ -64,6 +64,57 @@ class MetricRepository(BaseRepository):
             for r in rows
         ]
 
+    def recent_by_services(
+        self,
+        services: list[str],
+        metric: str | None = None,
+        limit: int = 200,
+    ) -> list[dict]:
+        """Recent metric rows (newest-first) for MANY services in one query —
+        `service = ANY(%s)` with the list bound, not interpolated — optionally
+        narrowed to a single metric. Powers MetricQueryBuilder.fetch's single
+        batched read: one round trip that the caller buckets by (service,
+        metric) in Python. Returns the same dict shape as recent_samples
+        (service, metric, value, ts, labels). Empty `services` => [] with no
+        query issued.
+
+        `limit` is PER (service, metric), not a global cap: a window function
+        ranks each series by ts DESC and keeps its own newest `limit`. A single
+        global LIMIT would let a high-frequency service (checkout emits 3
+        rows/iteration) consume the whole budget and starve a low-frequency
+        dependency to zero rows — which the health sweep would then misread as
+        "no data" and silently drop that dependency's real breach."""
+        if not services:
+            return []
+        clauses: list[str] = ["service = ANY(%s)"]
+        params: list = [list(services)]
+        if metric:
+            clauses.append("metric = %s")
+            params.append(metric)
+        where = "WHERE " + " AND ".join(clauses)
+        params.append(limit)
+        with self.conn.cursor() as cur:
+            cur.execute(
+                f"""
+                SELECT service, metric, value, ts, labels FROM (
+                    SELECT service, metric, value, ts, labels,
+                           row_number() OVER (
+                               PARTITION BY service, metric ORDER BY ts DESC
+                           ) AS rn
+                    FROM metrics
+                    {where}
+                ) ranked
+                WHERE rn <= %s
+                ORDER BY ts DESC
+                """,
+                tuple(params),
+            )
+            rows = cur.fetchall()
+        return [
+            {"service": r[0], "metric": r[1], "value": float(r[2]), "ts": r[3], "labels": r[4]}
+            for r in rows
+        ]
+
     def recent(self, service: str, metric: str, limit: int = 200) -> list[float]:
         """Most-recent `limit` values for (service, metric), NEWEST-FIRST.
 

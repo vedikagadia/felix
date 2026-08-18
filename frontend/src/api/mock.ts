@@ -99,6 +99,44 @@ const POOL_SCENARIO: ChatResponse = {
       },
     ],
     changes: [],
+    topology_health: [
+      {
+        service: "payment-gateway",
+        metric: "payment_latency_ms",
+        intent: "p99",
+        observed: 1214,
+        threshold: 800,
+        breached: true,
+        sample_count: 42,
+      },
+    ],
+    runbooks: [
+      {
+        distance: 0.44,
+        item: {
+          id: "mock-rb-1",
+          title: "Connection-pool exhaustion under load",
+          symptoms:
+            "db.pool.exhausted during traffic spikes; the pool saturates while a downstream call is slow.",
+          service: "checkout-service",
+          tags: ["pool", "checkout"],
+          steps: [
+            {
+              step_order: 1,
+              action: "Check whether a pooled connection is held across a slow downstream call",
+              command: null,
+              outcome: "Confirms the hold pattern vs. genuine DB capacity",
+            },
+            {
+              step_order: 2,
+              action: "Release the connection before the slow call; re-acquire after",
+              command: null,
+              outcome: "Pool utilisation drops under the same load",
+            },
+          ],
+        },
+      },
+    ],
     upstream: [
       {
         depth: 0,

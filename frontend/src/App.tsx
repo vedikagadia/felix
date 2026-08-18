@@ -14,6 +14,7 @@ import { AlertBanner } from "./components/AlertBanner";
 import { AlertComposer } from "./components/AlertComposer";
 import { ChatThread } from "./components/ChatThread";
 import { EvidencePanel } from "./components/EvidencePanel";
+import { ReasoningOverlay } from "./components/ReasoningOverlay";
 import { IncidentsPage } from "./components/IncidentsPage";
 import { LiveMonitoringPage } from "./components/LiveMonitoringPage";
 import { DbOverviewPage } from "./components/DbOverviewPage";
@@ -88,8 +89,12 @@ export function App() {
   // Text to drop into the composer from the library's "Ask AI". `nonce` bumps
   // on every click so re-asking the same incident re-fills the box.
   const [prefill, setPrefill] = useState<{ text: string; nonce: number }>({ text: "", nonce: 0 });
+  // The turn currently playing the reasoning-replay overlay (a fresh diagnosis
+  // only — follow-ups skip it). null = no overlay.
+  const [replayId, setReplayId] = useState<number | null>(null);
 
   const activeTurn = turns.find((t) => t.id === activeId) ?? null;
+  const replayTurn = replayId !== null ? (turns.find((t) => t.id === replayId) ?? null) : null;
 
   function newIncident() {
     setSessionId(null);
@@ -156,6 +161,9 @@ export function App() {
     setTurns((prev) => [...prev, { id, request: outbound, pending: true }]);
     setActiveId(id);
     setBusy(true);
+    // Play the reasoning-replay overlay for a fresh incident (first turn). A
+    // follow-up in an open conversation is conversational — no full replay.
+    if (!sessionId) setReplayId(id);
 
     // Stream the turn: evidence fills the panel first, deltas render live, then
     // the final response swaps in the parsed diagnosis. onDone/onError are
@@ -287,6 +295,10 @@ export function App() {
             </aside>
           </main>
         </>
+      )}
+
+      {replayTurn && (
+        <ReasoningOverlay turn={replayTurn} onDone={() => setReplayId(null)} />
       )}
     </div>
   );

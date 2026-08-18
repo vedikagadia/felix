@@ -1,0 +1,43 @@
+{
+  "nodes": [
+    {
+      "id": "svc-checkout-service",
+      "name": "checkout-service",
+      "kind": "service",
+      "summary": "The checkout request path (CheckoutHandler.process): acquires a pool connection, charges via the payment gateway, then enqueues fulfillment.",
+      "health_checks": [
+        {"metric": "checkout_latency_ms", "intent": "p99", "threshold": 1000}
+      ]
+    },
+    {
+      "id": "svc-payment-gateway",
+      "name": "payment-gateway",
+      "kind": "external",
+      "summary": "PaymentClient.charge — the degrading dependency where the latency spike originates (one retry + backoff every GATEWAY_SLOW_EVERY-th charge).",
+      "health_checks": [
+        {"metric": "payment_latency_ms", "intent": "p99", "threshold": 800}
+      ]
+    },
+    {
+      "id": "svc-fulfillment",
+      "name": "fulfillment",
+      "kind": "service",
+      "summary": "FulfillmentQueue.enqueue — the healthy leaf; sub-millisecond append with no latency dynamics under demo-length runs.",
+      "health_checks": [
+        {"metric": "enqueue_latency_ms", "intent": "p99", "threshold": 50}
+      ]
+    },
+    {
+      "id": "svc-connection-pool",
+      "name": "connection-pool",
+      "kind": "datastore",
+      "summary": "ConnectionPool (DB_POOL_SIZE=10) — held across PaymentClient.charge's retry loop by CheckoutHandler.process (the code-only Incident A). No saturation metric is emitted for it today.",
+      "health_checks": []
+    }
+  ],
+  "edges": [
+    {"src": "checkout-service", "dst": "payment-gateway", "kind": "depends_on"},
+    {"src": "checkout-service", "dst": "fulfillment", "kind": "depends_on"},
+    {"src": "checkout-service", "dst": "connection-pool", "kind": "depends_on"}
+  ]
+}

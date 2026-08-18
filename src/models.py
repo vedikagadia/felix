@@ -43,6 +43,31 @@ class Incident:
 
 
 @dataclass
+class RunbookStep:
+    """One step of a curated runbook — field-identical to ResolutionStep, but
+    part of authored procedure rather than an incident's recorded resolution."""
+
+    step_order: int
+    action: str
+    command: str | None = None
+    outcome: str | None = None
+
+
+@dataclass
+class Runbook:
+    """A curated, reusable playbook recalled by MEANING (vector search on its
+    trigger text), distinct from `incidents` (episodic history). Mirrors
+    Incident: a parent row embedded on (title + symptoms) + ordered child steps."""
+
+    id: str
+    title: str
+    symptoms: str  # the trigger text embedded for vector recall
+    service: str | None = None
+    tags: list[str] = field(default_factory=list)
+    created_at: datetime | None = None
+    steps: list[RunbookStep] = field(default_factory=list)
+
+@dataclass
 class DocChunk:
     id: str
     doc_title: str
@@ -107,6 +132,23 @@ class GraphHit:
     depth: int
 
 
+# ── live-metric health ───────────────────────────────────────────────────────
+
+
+@dataclass
+class NodeHealth:
+    """The health of ONE service node against ONE configured check. Records
+    which signal breached and the observed value vs. the threshold it crossed."""
+
+    service: str  # the node's service name (metrics.service)
+    metric: str  # the metric evaluated (metrics.metric)
+    intent: str  # which MetricQueryBuilder intent breached: "p99"|"avg"|"error_rate"|"latest"
+    observed: float  # the computed value for `intent` over the window
+    threshold: float  # the configured level `observed` is compared against
+    breached: bool  # True iff observed >= threshold
+    sample_count: int  # how many samples backed `observed` (0 => no data)
+
+
 # ── assembled evidence + reasoning output ────────────────────────────────────
 
 
@@ -120,6 +162,11 @@ class EvidencePacket:
     docs: list[Recall[DocChunk]] = field(default_factory=list)
     changes: list[Recall[CodeChange]] = field(default_factory=list)
     upstream: list[GraphHit] = field(default_factory=list)
+    # Live-metric correlation (populated when the alert names a known service):
+    # the breached health checks across the alerting service's downstream
+    # dependency set, and any curated runbooks recalled for the alert text.
+    topology_health: list[NodeHealth] = field(default_factory=list)
+    runbooks: list[Recall[Runbook]] = field(default_factory=list)
 
 
 @dataclass
@@ -133,6 +180,20 @@ class Diagnosis:
     cited_change_ids: list[str] = field(default_factory=list)
     confidence: float | None = None
     incident_id: str | None = None
+    # The model's ranking of the evidence CLASSES by how much each informed this
+    # diagnosis, most-useful first — a subset/permutation of EVIDENCE_CLASSES.
+    # Drives the evidence panel's section order (most-relevant class on top), so
+    # the layout adapts per alert rather than being fixed. Empty when the model
+    # didn't rank (older payloads / defensive fallback) → panel uses its default
+    # order. Validated in IncidentDiagnoser._build_diagnosis against the known
+    # class names; unknown names are dropped.
+    evidence_order: list[str] = field(default_factory=list)
+
+
+# The evidence classes the reasoning layer may rank in `Diagnosis.evidence_order`
+# (and the frontend arranges the panel by). Kept beside the model so the prompt,
+# the parse-time validation, and the serializer share one source of truth.
+EVIDENCE_CLASSES = ("incidents", "docs", "changes", "topology_health", "upstream", "runbooks")
 
 
 @dataclass
@@ -148,6 +209,10 @@ class Message:
     cited_incident_ids: list[str] = field(default_factory=list)
     cited_change_ids: list[str] = field(default_factory=list)
     incident_id: str | None = None
+    # Same evidence-class ranking a Diagnosis carries — a follow-up still recalls
+    # memory, so the panel re-orders its sections per turn. Empty → default order.
+    # See Diagnosis.evidence_order and IncidentDiagnoser._parse_evidence_order.
+    evidence_order: list[str] = field(default_factory=list)
 
 
 # The two response shapes the reasoning layer can produce for one turn.

@@ -23,7 +23,9 @@ from ..models import (
     GraphHit,
     Incident,
     Message,
+    NodeHealth,
     Recall,
+    Runbook,
 )
 
 
@@ -100,6 +102,41 @@ def graph_hit_to_dict(hit: GraphHit) -> dict[str, Any]:
     return {"node": node_to_dict(hit.node), "depth": hit.depth}
 
 
+def node_health_to_dict(nh: NodeHealth) -> dict[str, Any]:
+    """One breached downstream health check -> the NodeHealth shape the panel
+    renders as the live-metric-querying proof (which signal breached, observed
+    vs. threshold, and how many samples backed it)."""
+    return {
+        "service": nh.service,
+        "metric": nh.metric,
+        "intent": nh.intent,
+        "observed": nh.observed,
+        "threshold": nh.threshold,
+        "breached": nh.breached,
+        "sample_count": nh.sample_count,
+    }
+
+
+def runbook_to_dict(rb: Runbook) -> dict[str, Any]:
+    return {
+        "id": rb.id,
+        "title": rb.title,
+        "symptoms": rb.symptoms,
+        "service": rb.service,
+        "tags": rb.tags,
+        "created_at": _iso(rb.created_at),
+        "steps": [
+            {
+                "step_order": s.step_order,
+                "action": s.action,
+                "command": s.command,
+                "outcome": s.outcome,
+            }
+            for s in rb.steps
+        ],
+    }
+
+
 def packet_to_dict(packet: EvidencePacket) -> dict[str, Any]:
     return {
         "alert": packet.alert,
@@ -107,6 +144,10 @@ def packet_to_dict(packet: EvidencePacket) -> dict[str, Any]:
         "docs": [_recall_to_dict(r, doc_to_dict) for r in packet.docs],
         "changes": [_recall_to_dict(r, change_to_dict) for r in packet.changes],
         "upstream": [graph_hit_to_dict(h) for h in packet.upstream],
+        # Live-metric correlation (the "what's ALSO unhealthy downstream right
+        # now" proof) + curated runbooks recalled for the alert text.
+        "topology_health": [node_health_to_dict(nh) for nh in packet.topology_health],
+        "runbooks": [_recall_to_dict(r, runbook_to_dict) for r in packet.runbooks],
     }
 
 
@@ -119,6 +160,7 @@ def diagnosis_to_dict(d: Diagnosis) -> dict[str, Any]:
         "cited_change_ids": d.cited_change_ids,
         "confidence": d.confidence,
         "incident_id": d.incident_id,
+        "evidence_order": d.evidence_order,
     }
 
 
@@ -128,6 +170,7 @@ def message_to_dict(m: Message) -> dict[str, Any]:
         "cited_incident_ids": m.cited_incident_ids,
         "cited_change_ids": m.cited_change_ids,
         "incident_id": m.incident_id,
+        "evidence_order": m.evidence_order,
     }
 
 
