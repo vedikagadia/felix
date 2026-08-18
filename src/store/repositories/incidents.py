@@ -98,8 +98,11 @@ class IncidentRepository(BaseRepository):
         severity: str | None = None,
     ) -> str:
         """Insert one incidents row WITHOUT an embedding (embedding stays NULL,
-        so this row is invisible to vector recall — `recall()`'s ORDER BY
-        distance treats NULL embeddings as non-matching / sorts them last).
+        so this row is invisible to vector recall — both `recall()` and
+        `search()` filter `WHERE embedding IS NOT NULL`, so a NULL-embedding row
+        is skipped entirely, not ranked. This matters: `embedding <-> query` is
+        NULL for such a row, so returning it would crash the `float(distance)`
+        parse — the filter, not ORDER BY, is what keeps it out).
 
         Used by the reasoning layer to create a parent incident row for an
         alert being diagnosed live, so resolution_steps have somewhere to
@@ -308,7 +311,7 @@ class IncidentRepository(BaseRepository):
                 SELECT id, title, severity, symptoms, root_cause, service,
                        embedding <-> %s::VECTOR(1024) AS distance
                 FROM incidents
-                WHERE project = %s
+                WHERE embedding IS NOT NULL AND project = %s
                 ORDER BY distance
                 LIMIT %s
                 """,

@@ -42,7 +42,7 @@ class DocRepository(BaseRepository):
                 SELECT id, doc_title, heading, body, doc_type,
                        embedding <-> %s::VECTOR(1024) AS distance
                 FROM doc_chunks
-                WHERE project = %s
+                WHERE embedding IS NOT NULL AND project = %s
                 ORDER BY distance
                 LIMIT %s
                 """,

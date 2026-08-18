@@ -65,7 +65,8 @@ class ChangeRepository(BaseRepository):
                 SELECT id, commit_sha, merged_at, title, summary,
                        embedding <-> %s::VECTOR(1024) AS distance
                 FROM code_changes
-                WHERE merged_at > now() - (%s * interval '1 day') AND project = %s
+                WHERE embedding IS NOT NULL
+                  AND merged_at > now() - (%s * interval '1 day') AND project = %s
                 ORDER BY distance
                 LIMIT %s
                 """,
