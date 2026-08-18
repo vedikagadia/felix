@@ -143,3 +143,14 @@ class ActiveIncidentRepository(BaseRepository):
                 "UPDATE active_incidents SET status = %s, updated_at = now() WHERE id = %s",
                 (status, session_id),
             )
+
+    def link_incident(self, session_id: str, incident_id: str) -> None:
+        """Attach an episodic incident to an already-open session (bumps
+        updated_at). Used by the CDC alert-first path: the session is opened
+        before the LLM diagnosis runs, so the episodic incident id it mints is
+        linked back afterwards rather than at create time."""
+        with self.conn.cursor() as cur:
+            cur.execute(
+                "UPDATE active_incidents SET incident_id = %s, updated_at = now() WHERE id = %s",
+                (incident_id, session_id),
+            )
