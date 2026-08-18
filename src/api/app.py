@@ -13,9 +13,11 @@ Run it with `python -m src serve` (see cli.py) or, for autoreload during dev:
 from __future__ import annotations
 
 import json
+import logging
 import os
+from contextlib import asynccontextmanager
 
-from fastapi import Depends, FastAPI, HTTPException, WebSocket
+from fastapi import Depends, FastAPI, HTTPException, Query, WebSocket
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from pydantic import BaseModel, Field
@@ -39,6 +41,73 @@ from .schemas import (
 _METRICS_CHANGEFEED_SQL = "EXPERIMENTAL CHANGEFEED FOR metrics WITH updated, no_initial_scan"
 
 
+log = logging.getLogger(__name__)
+
+
+def _env_flag(name: str) -> bool:
+    """Is the boolean env var `name` turned on? One truthy set shared by every
+    FELIX_* flag (matches Settings.cli_enabled) so `=on` never silently no-ops
+    on one flag while working on another. Absent/unset reads as off."""
+    return os.environ.get(name, "").strip().lower() in ("1", "true", "yes", "on")
+
+
+def _watcher_enabled() -> bool:
+    """Run the CDC watcher in-process? Off by default (local `serve` is a plain
+    API). The merged web+watch deploy sets FELIX_RUN_WATCHER=1 so one process —
+    and one shared embedding model — serves the API AND holds the changefeed
+    (DEPLOY.md §4). Standalone `python -m src watch` is unaffected."""
+    return _env_flag("FELIX_RUN_WATCHER")
+
+
+def _sample_enabled() -> bool:
+    """Run the sample-traffic driver in-process? Off by default (local `serve`
+    is a plain API). The deployed demo sets FELIX_RUN_SAMPLE=1 so the web task
+    also drives real checkout traffic, which is what feeds the metrics the CDC
+    watcher reacts to — no separate sample task needed. Standalone
+    `python -m sample_project.run` is unaffected."""
+    return _env_flag("FELIX_RUN_SAMPLE")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Optionally start the CDC watcher and/or the sample-traffic driver on
+    their own background threads for the lifetime of the server. Each shares
+    the process embedder but owns its own DB connection(s); on shutdown
+    (SIGTERM from Fargate) both are torn down cleanly, independently of
+    whether the other was enabled."""
+    watcher = None
+    if _watcher_enabled():
+        from ..service.watcher import BackgroundWatcher
+
+        log.info("FELIX_RUN_WATCHER set — starting in-process CDC watcher")
+        watcher = BackgroundWatcher()
+        watcher.start()
+
+    traffic_driver = None
+    if _sample_enabled():
+        from sample_project.run import BackgroundTrafficDriver
+
+        log.info("FELIX_RUN_SAMPLE set — starting in-process sample-traffic driver")
+        traffic_driver = BackgroundTrafficDriver()
+        traffic_driver.start()
+
+    # Expose the thread handles so /health can report their liveness. Absent
+    # (None) means "not enabled in this process"; present means "should be
+    # running" — a False is_alive() then signals a silently-dead thread.
+    app.state.watcher = watcher
+    app.state.traffic_driver = traffic_driver
+
+    try:
+        yield
+    finally:
+        if watcher is not None:
+            log.info("stopping in-process CDC watcher")
+            watcher.stop()
+        if traffic_driver is not None:
+            log.info("stopping in-process sample-traffic driver")
+            traffic_driver.stop()
+
+
 def _sse(event: str, data: dict) -> str:
     """Format one Server-Sent Events frame: a named event + a JSON data line.
     Frames are separated by a blank line, per the SSE spec."""
@@ -46,7 +115,9 @@ def _sse(event: str, data: dict) -> str:
 
 
 class ChatRequest(BaseModel):
-    alert: str = Field(..., min_length=1, description="The alert / error message text.")
+    alert: str = Field(
+        ..., min_length=1, max_length=8000, description="The alert / error message text."
+    )
     origin_node: str | None = Field(
         default=None,
         description="code_nodes.name where the symptom surfaces; enables the upstream graph trace.",
@@ -71,6 +142,7 @@ class DbPlanRequest(BaseModel):
     instruction: str = Field(
         ...,
         min_length=1,
+        max_length=2000,
         description="A natural-language DB request (e.g. 'add a table for on-call "
         "schedules'). felix maps it to ONE CockroachDB MCP tool call for review — "
         "it is not executed here.",
@@ -112,6 +184,7 @@ def create_app() -> FastAPI:
         title="felix",
         description="SRE incident-memory agent — HTTP API over the recall + reasoning loop.",
         version="0.1.0",
+        lifespan=lifespan,
     )
 
     # CORS: allow the Vite dev origin(s). Override with FELIX_CORS_ORIGINS
@@ -127,7 +200,25 @@ def create_app() -> FastAPI:
 
     @app.get("/health")
     def health() -> dict:
-        return {"status": "ok"}
+        """Liveness of the API plus any in-process background threads.
+
+        For each optional daemon (CDC watcher, sample-traffic driver) reports:
+          - null    — not enabled in this process (nothing to supervise)
+          - true    — enabled and its thread is running
+          - false   — enabled but its thread has died (crash logged in `_run`)
+        `status` is "ok" unless an enabled thread is no longer alive, in which
+        case it's "degraded" — so a supervisor (or the demo) can see a silently
+        dead watcher/driver instead of a green light over a broken background."""
+
+        def _liveness(obj) -> bool | None:
+            return obj.is_alive() if obj is not None else None
+
+        threads = {
+            "watcher": _liveness(getattr(app.state, "watcher", None)),
+            "traffic_driver": _liveness(getattr(app.state, "traffic_driver", None)),
+        }
+        degraded = any(alive is False for alive in threads.values())
+        return {"status": "degraded" if degraded else "ok", "threads": threads}
 
     @app.get("/projects")
     def list_projects(conn=Depends(db_conn)) -> dict:
@@ -191,9 +282,14 @@ def create_app() -> FastAPI:
         return {"incidents": [{"item": incident_to_dict(i), "distance": None} for i in rows]}
 
     @app.get("/incidents/search")
-    def search_incidents(q: str, k: int = 10, project: str = "sample", conn=Depends(db_conn)) -> dict:
-        """Semantic search over `project`'s incident library — embeds `q` and
-        ranks incidents by CockroachDB VECTOR distance (the showcase). Returns
+ def search_incidents(
+          q: str = Query(..., min_length=1, max_length=8000),
+          k: int = 10,
+          project: str = "sample",
+          conn=Depends(db_conn),
+      ) -> dict:
+          """Semantic search over `project`'s incident library — embeds `q` and
+          ranks incidents by CockroachDB VECTOR distance (the showcase). Returns
         {"query", "incidents": [{item, distance}]} sorted nearest-first."""
         from ..clients.embedder import get_embedder
         from ..store.repositories import IncidentRepository
@@ -581,6 +677,20 @@ def create_app() -> FastAPI:
             # Disable proxy buffering so deltas reach the browser as they're sent.
             headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"},
         )
+
+    # Serve the built React UI at / so the deployed image answers the URL judges
+    # open (the API + the SPA on one origin — see frontend/.env.production). The
+    # Dockerfile copies the Vite build to ./frontend/dist; mounting LAST means
+    # the explicit API routes above win, and this catches everything else.
+    # html=True serves index.html for / and the SPA fallback. Guarded: a local
+    # dev checkout without a build just skips the mount (the API still runs).
+    dist = os.path.join(os.getcwd(), "frontend", "dist")
+    if os.path.isdir(dist):
+        from fastapi.staticfiles import StaticFiles
+
+        app.mount("/", StaticFiles(directory=dist, html=True), name="ui")
+    else:
+        log.info("frontend/dist not found (%s) — serving API only, no UI", dist)
 
     return app
 

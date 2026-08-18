@@ -54,7 +54,7 @@ export function subscribeToAlerts(
  * transport or non-2xx failure so the click handler can surface it.
  */
 export async function getSession(id: string): Promise<SessionResponse> {
-  if (!API_URL) {
+  if (usingMock) {
     throw new Error("Cannot load a session in mock mode (VITE_API_URL is unset).");
   }
   const res = await fetch(appendProject(`${API_URL}/sessions/${id}`));
