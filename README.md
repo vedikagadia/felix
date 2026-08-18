@@ -48,20 +48,6 @@ knowledge is scattered across old incidents, wikis, merge history, dashboards,
 and the code itself. felix makes that knowledge an agent's memory — and proves
 that **memory, not the model, is what makes the agent useful**.
 
-## Two planted incidents
-
-felix ships with a fictional-but-realistic target service and a curated memory
-corpus (`sample_project/`, ground truth in `WORLD.md`) containing two incidents
-each solvable by **only one** memory source — so each source has to pull its
-weight:
-
-| Puzzle | Symptom | Only-source that cracks it |
-|---|---|---|
-| **A — "code-only"** | `db.pool.exhausted` during spikes; scaling the DB doesn't help | The **code graph** — trace upstream from `ConnectionPool.acquire` and find `CheckoutHandler.process` holding a pool connection across a slow retry loop. No incident/doc/change reveals it. |
-| **B — "merge-only"** | Customers report slow checkout but **dashboards are green** | A single **`code_changes` merge** that flipped `LATENCY_AGGREGATION` from `p99` → `avg`, hiding the tail. Only the time-windowed change recall surfaces it. |
-
----
-
 ## Feature showcase
 
 Everything felix knows lives in **one CockroachDB**, spread across purpose-built
