@@ -146,30 +146,59 @@ class IncidentDiagnoser:
     ) -> DiagnosisResult:
         """Run one turn of the loop.
 
-        When `session_id` names an existing active-incident conversation (and an
-        `active_repo` is wired), this is a FOLLOW-UP: the prior transcript is fed
-        into the prompt and the turn is recorded in working memory ONLY — no new
-        episodic incident is minted. Otherwise it's the FIRST turn: it writes an
-        episodic `incidents` row (as before) and, if working memory is enabled,
-        opens a session so subsequent turns can continue it. The returned
-        `DiagnosisResult.session_id` is the conversation to echo on the next turn.
+        A turn is a FOLLOW-UP only when `session_id` names a session that ALREADY
+        carries a diagnosis (a linked `incident_id`); then the prior transcript is
+        fed into the prompt and the turn is recorded in working memory ONLY — no
+        new episodic incident is minted. Otherwise it's a FIRST turn — a fresh
+        chat OR the first diagnosis of a CDC-raised alert (a session with a user
+        turn but no incident yet, opened LLM-free by `raise_cdc_alert`): it writes
+        an episodic `incidents` row and, if working memory is enabled, opens a
+        session (or links the incident to the pre-opened CDC one) so subsequent
+        turns can continue it. The returned `DiagnosisResult.session_id` is the
+        conversation to echo on the next turn.
         """
         # Steps 0-2: load prior conversation + recall + origin resolution.
         packet, resolved_service, session = self._prepare(alert, origin_node, k, session_id)
+        followup = self._is_followup(session)
 
-        # 3. BUILD PROMPT (folding in the prior transcript on follow-ups).
-        prompt = self._build_prompt(packet, history=session.turns if session else None)
+        # 3. BUILD PROMPT (folding in the prior transcript only on a real follow-up).
+        prompt = self._build_prompt(packet, history=session.turns if followup else None)
 
         # 4. REASON. Let exceptions from the LLM propagate untouched — no writes
         # have happened yet, so a failed call leaves no partial rows.
         result = self.llm.complete(prompt, system=_SYSTEM_PROMPT)
 
         # 5. PARSE DEFENSIVELY + citation-integrity guard. Follow-ups may answer
-        # with a lightweight message; first turns are always a full diagnosis.
-        response = self._parse_response(result.text, packet, allow_message=session is not None)
+        # with a lightweight message; first turns (incl. an undiagnosed alert's
+        # first turn) are always a full diagnosis.
+        response = self._parse_response(result.text, packet, allow_message=followup)
 
         # 6-7. WRITE-BACK + return (shared with the streaming path).
         return self._finish(alert, origin_node, resolved_service, response, result, packet, session, source)
+
+    # ── CDC alert-first path (decoupled raise / diagnose) ─────────────────────
+
+    def raise_cdc_alert(self, alert: str, origin_node: str | None, *, source: str = "cdc") -> str:
+        """RAISE an alert with NO LLM call: open the alert session and seed its
+        user turn, so a detected anomaly is immediately visible at `/alerts`. The
+        session carries no linked incident yet — its FIRST `/chat` turn (when the
+        operator opens the alert) runs the actual diagnosis into it, see
+        `_is_followup`. Requires working memory (`active_repo`). Returns the
+        session id."""
+        if self.active_repo is None:
+            raise RuntimeError("raise_cdc_alert requires an ActiveIncidentRepository")
+        session_id = self.active_repo.create_session(
+            alert=alert, origin_node=origin_node, source=source
+        )
+        self.active_repo.append_turn(session_id, role="user", content=alert)
+        return session_id
+
+    @staticmethod
+    def _is_followup(session) -> bool:
+        """True only for a session that ALREADY carries a diagnosis (a linked
+        `incident_id`). A CDC-raised alert has a session but no incident yet, so
+        its first turn is a fresh diagnosis, not a conversational follow-up."""
+        return session is not None and session.incident_id is not None
 
     def respond_stream(
         self,
@@ -197,9 +226,10 @@ class IncidentDiagnoser:
         failure mid-stream leaves no partial rows.
         """
         packet, resolved_service, session = self._prepare(alert, origin_node, k, session_id)
+        followup = self._is_followup(session)
         yield ("evidence", packet)
 
-        prompt = self._build_prompt(packet, history=session.turns if session else None)
+        prompt = self._build_prompt(packet, history=session.turns if followup else None)
 
         # Stream the completion, forwarding each delta and accumulating the full
         # text to parse once the stream ends (identical parse to respond()).
@@ -213,7 +243,7 @@ class IncidentDiagnoser:
         # write-back/audit (model id from the client; token counts unavailable
         # mid-stream, so left None — the audit still records model + output).
         result = LLMResult(text=full_text, model=self.llm.model_id, input_tokens=None, output_tokens=None)
-        response = self._parse_response(full_text, packet, allow_message=session is not None)
+        response = self._parse_response(full_text, packet, allow_message=followup)
 
         yield ("done", self._finish(alert, origin_node, resolved_service, response, result, packet, session, source))
 
@@ -267,13 +297,18 @@ class IncidentDiagnoser:
         # WRITE-BACK — split by turn kind, each in ONE transaction so a
         # mid-sequence failure rolls back cleanly (no orphan rows). The repos
         # share the single connection, so one transaction spans all writes.
-        if session is not None:
+        if self._is_followup(session):
             # A follow-up (message OR re-diagnosis) is working memory only — no
-            # new episodic incident. First turns are always a Diagnosis.
+            # new episodic incident.
             result_session_id = self._write_follow_up(session, alert, response, result, total_tokens)
         else:
+            # A first turn — either a fresh chat OR the first diagnosis of a
+            # CDC-raised alert (a session with a user turn but no incident yet).
+            # In the latter case, thread the existing session through so the
+            # minted incident links to it instead of opening a duplicate.
             result_session_id = self._write_first_turn(
-                alert, origin_node, resolved_service, response, result, total_tokens, source
+                alert, origin_node, resolved_service, response, result, total_tokens, source,
+                existing_session_id=session.id if session is not None else None,
             )
 
         # return the response + the evidence it reasoned over + the session to
@@ -289,15 +324,21 @@ class IncidentDiagnoser:
         result,
         total_tokens: int,
         source: str = "chat",
+        existing_session_id: str | None = None,
     ) -> str | None:
         """First turn: mint an episodic incident (+ steps + audit), and — if
         working memory is enabled — open a session and seed its transcript.
-        Returns the new session id (None when working memory is disabled)."""
+        Returns the new session id (None when working memory is disabled).
+
+        When `existing_session_id` is given (the CDC alert-first path), the
+        session was already opened (with the user turn seeded) before the LLM
+        ran; this links the minted incident to it and appends only the agent
+        turn, rather than creating a fresh session."""
         # diagnosis.proposed_steps holds whatever the model returned —
         # list[str] OR list[dict] per the schema — so coerce defensively.
         title = self._derive_title(alert)
         steps = self._to_resolution_steps(diagnosis.proposed_steps)
-        session_id: str | None = None
+        session_id: str | None = existing_session_id
         with self.incident_repo.conn.transaction():
             incident_id = self.incident_repo.insert_minimal(
                 title=title,
@@ -310,7 +351,12 @@ class IncidentDiagnoser:
                 self.incident_repo.add_resolution_steps(incident_id, steps)
             diagnosis.incident_id = incident_id
 
-            if self.active_repo is not None:
+            if existing_session_id is not None:
+                # Alert-first path: session + user turn already exist (LLM-free).
+                # Link the incident and record just the agent's reply.
+                self.active_repo.link_incident(existing_session_id, incident_id)
+                self.active_repo.append_turn(existing_session_id, role="agent", content=diagnosis.summary)
+            elif self.active_repo is not None:
                 session_id = self.active_repo.create_session(
                     alert=alert, origin_node=origin_node, incident_id=incident_id, source=source
                 )

@@ -60,7 +60,9 @@ def test_create_session_defaults_source_to_chat(conn):
 def test_create_session_cdc_source_is_queryable(conn):
     """A cdc session is found by list_alerts + count_open (the watcher/API path)."""
     repo = ActiveIncidentRepository(conn)
-    origin = "cdc:checkout-service:checkout_latency_ms"
+    # A test-only origin so this doesn't collide with any real open cdc session
+    # left in the local DB (the assertion is on an absolute count).
+    origin = "cdc:test-svc:test_latency_ms"
     session_id = repo.create_session(alert="p99 spiked", origin_node=origin, source="cdc")
 
     assert repo.count_open("cdc", origin) == 1

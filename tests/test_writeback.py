@@ -189,3 +189,38 @@ def test_failed_writeback_leaves_no_orphan(conn):
     after = _counts(conn)
 
     assert after == before, "transaction rolled back: no orphan incident/steps/audit"
+
+
+def test_cdc_alert_survives_failed_diagnosis(conn):
+    """The decoupled CDC path: raise_cdc_alert opens the alert with NO LLM, and a
+    later diagnosis failure (e.g. quota) must leave that alert OPEN rather than
+    losing it. Proves alerting doesn't depend on the LLM."""
+    from src.store.repositories import ActiveIncidentRepository
+
+    class _BoomLLM:
+        model_id = "boom"
+
+        def complete(self, *a, **k):
+            raise RuntimeError("429 quota exceeded (simulated)")
+
+        def stream(self, *a, **k):
+            raise RuntimeError("429 quota exceeded (simulated)")
+
+    diagnoser = _diagnoser(conn, _BoomLLM())
+    active = ActiveIncidentRepository(conn)
+    diagnoser.active_repo = active
+
+    # A test-only origin so the absolute count assertions don't collide with any
+    # real open cdc session left in the local DB by a prior watcher run.
+    origin = "cdc:test-svc:test_latency_ms"
+    alert = "p99 spiked to 1201ms while avg held flat at 178ms — no dashboard alert fired."
+
+    # RAISE: succeeds with no LLM, alert is immediately open.
+    session_id = diagnoser.raise_cdc_alert(alert, origin_node=origin)
+    assert active.count_open("cdc", origin) == 1, "alert should be open right after raise"
+
+    # DIAGNOSE-ON-OPEN: the first /chat turn of that raised session boots the
+    # LLM, which booms — but the open alert must survive (no partial write-back).
+    with pytest.raises(RuntimeError):
+        diagnoser.respond(alert, origin_node=origin, session_id=session_id, source="cdc")
+    assert active.count_open("cdc", origin) == 1, "alert must stay open after a failed diagnosis"

@@ -118,10 +118,13 @@ export function App() {
     setView("chat");
   }
 
-  // Open the triage session behind a clicked alert: load its pre-seeded turns,
-  // render them in the existing chat as one Turn (the synthesized alert + the
-  // agent's diagnosis), and adopt its session_id so the composer's next message
-  // is a follow-up through the same /chat/stream path — no forked rendering.
+  // Open the triage session behind a clicked alert. Two cases:
+  //  • already diagnosed — render the reconstructed diagnosis as one seeded Turn
+  //    (alerting is decoupled, but a session opened via chat already has one).
+  //  • raised-but-undiagnosed (a CDC alert: session + user turn, NO incident yet)
+  //    — the watcher never called the LLM, so the diagnosis happens HERE, on
+  //    open: drive a first-turn /chat/stream into that session so felix reasons
+  //    live (evidence panel fills, deltas render) exactly like a fresh incident.
   async function openAlert(alert: AlertPayload) {
     const existing = turns.find((t) => t.request.session_id === alert.session_id);
     if (existing) {
@@ -148,22 +151,35 @@ export function App() {
       return;
     }
 
-    const id = nextId++;
-    setTurns((prev) => [...prev, seededTurn(id, session)]);
-    setActiveId(id);
     setSessionId(session.session_id);
+    if (session.incident_id) {
+      // Already diagnosed — just render it.
+      const id = nextId++;
+      setTurns((prev) => [...prev, seededTurn(id, session)]);
+      setActiveId(id);
+      return;
+    }
+
+    // Undiagnosed CDC alert → diagnose on open. The session already carries the
+    // user turn; sending its alert with the session_id routes the backend
+    // through the first-turn diagnosis path (a session with no incident yet is
+    // NOT treated as a follow-up), minting + linking the incident.
+    await streamTurn(
+      { alert: session.alert, origin_node: session.origin_node, session_id: session.session_id },
+      { overlay: true },
+    );
   }
 
-  async function submit(req: ChatRequest) {
+  // Core of a streamed turn: create the Turn, run /chat/stream, and fold each
+  // frame (evidence → deltas → done/error) into it. `overlay` plays the
+  // reasoning-replay overlay (a fresh diagnosis — first chat turn or a CDC
+  // alert's diagnose-on-open); follow-ups pass false.
+  async function streamTurn(outbound: ChatRequest, { overlay }: { overlay: boolean }) {
     const id = nextId++;
-    // Continue the current conversation if one is open.
-    const outbound: ChatRequest = { ...req, session_id: sessionId ?? undefined };
     setTurns((prev) => [...prev, { id, request: outbound, pending: true }]);
     setActiveId(id);
     setBusy(true);
-    // Play the reasoning-replay overlay for a fresh incident (first turn). A
-    // follow-up in an open conversation is conversational — no full replay.
-    if (!sessionId) setReplayId(id);
+    if (overlay) setReplayId(id);
 
     // Stream the turn: evidence fills the panel first, deltas render live, then
     // the final response swaps in the parsed diagnosis. onDone/onError are
@@ -191,6 +207,12 @@ export function App() {
     } finally {
       setBusy(false);
     }
+  }
+
+  async function submit(req: ChatRequest) {
+    // Continue the current conversation if one is open; a fresh incident (no
+    // session yet) plays the reasoning-replay overlay, a follow-up doesn't.
+    await streamTurn({ ...req, session_id: sessionId ?? undefined }, { overlay: !sessionId });
   }
 
   return (

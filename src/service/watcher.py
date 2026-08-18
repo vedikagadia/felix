@@ -3,10 +3,11 @@
 Holds a sinkless CockroachDB CHANGEFEED on the `metrics` table, keeps a rolling
 per-`(service, metric)` window, and when p99 latency crosses a threshold while
 the average stays flat — the "dashboard still green" signature of the planted
-avg-hiding-tail bug — hands a synthesized alert to the EXISTING
-`IncidentDiagnoser.respond(source="cdc")`. All reasoning + write-back is the
-diagnoser's; this class owns only window state, the trip rule, and the dedup
-guard.
+avg-hiding-tail bug — RAISES an alert via `IncidentDiagnoser.raise_cdc_alert`.
+That's LLM-free: it opens an undiagnosed cdc session (immediately visible at
+/alerts). The diagnosis runs later, when an operator opens the alert (its first
+/chat turn) — so detection never depends on the LLM. This class owns only window
+state, the trip rule, and the dedup guard.
 
 The changefeed is an infinite result set: it MUST be consumed via the
 server-side streaming cursor (`cur.stream(...)`), never `execute` + iterate,
@@ -119,9 +120,12 @@ class MetricWatcher:
             self._fire(service, metric, window)
 
     def _fire(self, service: str, metric: str, window: Sequence[float]) -> None:
-        """Diagnose the trip — unless an open cdc session already exists for this
-        (service, metric), which the DB-backed cooldown catches so a sustained
-        spike mints exactly one diagnosis."""
+        """Handle a trip by RAISING an alert only — NO LLM. The watcher opens an
+        undiagnosed cdc session (visible at /alerts immediately) and stops there;
+        the actual diagnosis runs when an operator opens the alert (its first
+        /chat turn), so detection never depends on the LLM being reachable or in
+        quota. Skipped entirely when an open cdc session already exists for this
+        (service, metric), so a sustained spike raises exactly one alert."""
         origin_node = f"cdc:{service}:{metric}"
         # In-memory fast path: a warmed spike is anomalous on nearly every row,
         # so once we've fired for this key, short-circuit before the per-row DB
@@ -136,8 +140,12 @@ class MetricWatcher:
 
         alert = self._build_alert(service, metric, window)
         log.info("TRIP: %s", alert)
-        self.diagnoser.respond(alert, origin_node=origin_node, source="cdc")
+
+        # RAISE (no LLM). Mark _fired BEFORE the write so a transient DB error
+        # can't cause a re-fire storm on the next anomalous sample: raised once.
         self._fired.add(origin_node)
+        session_id = self.diagnoser.raise_cdc_alert(alert, origin_node=origin_node)
+        log.info("alert raised (session %s) — now visible at /alerts, diagnosis on open", session_id)
 
     def _count_open_cdc(self, origin_node: str) -> int:
         """Read-only dedup guard on the watcher's own connection (CDC_INTERFACE
