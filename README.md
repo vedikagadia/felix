@@ -65,12 +65,23 @@ tables and recalled by the mechanism that fits each kind of knowledge:
 Plus **working memory** (`active_incidents` + `active_incident_turns` — the live
 multi-turn conversation) and an **audit log** (`agent_actions`).
 
-**The reasoning loop:** recall → origin resolution → prompt → LLM → defensive
-parse + citation-integrity guard → atomic write-back (one transaction: incident +
-steps + audit). felix only *learns* from diagnoses a human confirms: a live
-diagnosis is stored **without an embedding** (invisible to recall) until a 👍
-promotes it into recallable memory (👎 keeps it out) — so an unreviewed guess
-never pollutes future retrieval.
+**The reasoning loop.** When an alert comes in, felix works through these steps:
+
+```mermaid
+flowchart TD
+    A[Alert] --> B[Recall relevant memory]
+    B --> C[Pin down where the symptom<br/>surfaced in the code]
+    C --> D[Ask the model to diagnose]
+    D --> E[Check the answer only cites<br/>evidence it was actually given]
+    E --> F[Save the diagnosis + fix steps<br/>in one transaction]
+    F --> G{A human confirms<br/>it was helpful?}
+    G -->|👍 yes| H[Becomes recallable<br/>for future alerts]
+    G -->|👎 no| I[Kept out of recall]
+```
+
+That last step is how felix stays trustworthy: a live diagnosis is saved
+**without an embedding**, so it's invisible to recall until a human confirms it —
+an unreviewed guess never pollutes future retrieval.
 
 The web UI (React + Vite + TS over a FastAPI backend) surfaces all of this
 across five panels:
