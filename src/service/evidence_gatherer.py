@@ -29,15 +29,21 @@ from .topology_health import TopologyHealthService
 
 
 class EvidenceGatherer:
-    def __init__(self, conn: psycopg.Connection, embedder: Embedder | None = None):
+    def __init__(
+        self,
+        conn: psycopg.Connection,
+        embedder: Embedder | None = None,
+        project: str = "sample",
+    ):
         self.conn = conn
+        self.project = project
         self.embedder = embedder or get_embedder()
-        self.incidents = IncidentRepository(conn)
-        self.docs = DocRepository(conn)
-        self.changes = ChangeRepository(conn)
-        self.graph = GraphRepository(conn)
-        self.runbooks = RunbookRepository(conn)
-        self.health = TopologyHealthService(conn)
+        self.incidents = IncidentRepository(conn, project)
+        self.docs = DocRepository(conn, project)
+        self.changes = ChangeRepository(conn, project)
+        self.graph = GraphRepository(conn, project)
+        self.runbooks = RunbookRepository(conn, project)
+        self.health = TopologyHealthService(conn, project=project)
 
     def gather(
         self,

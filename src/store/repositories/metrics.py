@@ -20,10 +20,10 @@ class MetricRepository(BaseRepository):
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO metrics (service, metric, value, labels)
-                VALUES (%s, %s, %s, %s)
+                INSERT INTO metrics (project, service, metric, value, labels)
+                VALUES (%s, %s, %s, %s, %s)
                 """,
-                (service, metric, value, json.dumps(labels) if labels is not None else None),
+                (self.project, service, metric, value, json.dumps(labels) if labels is not None else None),
             )
 
     def recent_samples(
@@ -37,15 +37,15 @@ class MetricRepository(BaseRepository):
         the panel seeds each series' sparkline from these before subscribing to
         the changefeed for steady-state samples. Returns dicts (service, metric,
         value, ts, labels) — `ts` a psycopg datetime the API layer ISO-8601s."""
-        clauses: list[str] = []
-        params: list = []
+        clauses: list[str] = ["project = %s"]
+        params: list = [self.project]
         if service:
             clauses.append("service = %s")
             params.append(service)
         if metric:
             clauses.append("metric = %s")
             params.append(metric)
-        where = ("WHERE " + " AND ".join(clauses)) if clauses else ""
+        where = "WHERE " + " AND ".join(clauses)
         params.append(limit)
         with self.conn.cursor() as cur:
             cur.execute(
@@ -86,8 +86,8 @@ class MetricRepository(BaseRepository):
         "no data" and silently drop that dependency's real breach."""
         if not services:
             return []
-        clauses: list[str] = ["service = ANY(%s)"]
-        params: list = [list(services)]
+        clauses: list[str] = ["project = %s", "service = ANY(%s)"]
+        params: list = [self.project, list(services)]
         if metric:
             clauses.append("metric = %s")
             params.append(metric)
@@ -126,11 +126,11 @@ class MetricRepository(BaseRepository):
                 """
                 SELECT value
                 FROM metrics
-                WHERE service = %s AND metric = %s
+                WHERE project = %s AND service = %s AND metric = %s
                 ORDER BY ts DESC
                 LIMIT %s
                 """,
-                (service, metric, limit),
+                (self.project, service, metric, limit),
             )
             rows = cur.fetchall()
         return [float(r[0]) for r in rows]

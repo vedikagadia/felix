@@ -40,11 +40,11 @@ class GraphRepository(BaseRepository):
             cur.execute(
                 """
                 UPSERT INTO code_nodes
-                    (id, name, kind, file, service, source, summary, last_commit)
+                    (id, project, name, kind, file, service, source, summary, last_commit)
                 VALUES
-                    (%s, %s, %s, %s, %s, %s, %s, %s)
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s)
                 """,
-                (id, name, kind, file, service, source, summary, last_commit),
+                (id, self.project, name, kind, file, service, source, summary, last_commit),
             )
         return id
 
@@ -76,7 +76,7 @@ class GraphRepository(BaseRepository):
             cur.execute(
                 f"""
                 WITH RECURSIVE reach(id, depth) AS (
-                    SELECT id, 0 FROM code_nodes WHERE name = %s
+                    SELECT id, 0 FROM code_nodes WHERE name = %s AND project = %s
                     UNION ALL
                     {step}
                     WHERE r.depth < %s
@@ -88,7 +88,7 @@ class GraphRepository(BaseRepository):
                          n.summary, n.last_commit, n.updated_at
                 ORDER BY depth
                 """,
-                (start_name, max_depth),
+                (start_name, self.project, max_depth),
             )
             rows = cur.fetchall()
         # row: (depth, id, name, kind, file, service, source, summary, last_commit, updated_at)
@@ -144,10 +144,10 @@ class GraphRepository(BaseRepository):
                     """
                     SELECT id, name, kind, file, service, source, summary, last_commit
                     FROM code_nodes
-                    WHERE lower(name) = lower(%s)
+                    WHERE lower(name) = lower(%s) AND project = %s
                     LIMIT 1
                     """,
-                    (candidate,),
+                    (candidate, self.project),
                 )
                 row = cur.fetchone()
                 if row is not None:
@@ -158,11 +158,11 @@ class GraphRepository(BaseRepository):
                     """
                     SELECT id, name, kind, file, service, source, summary, last_commit
                     FROM code_nodes
-                    WHERE lower(name) LIKE lower(%s)
+                    WHERE lower(name) LIKE lower(%s) AND project = %s
                     ORDER BY length(name) ASC
                     LIMIT 1
                     """,
-                    (f"%.{trailing}",),
+                    (f"%.{trailing}", self.project),
                 )
                 row = cur.fetchone()
             if row is None:

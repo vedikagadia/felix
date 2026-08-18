@@ -62,11 +62,11 @@ class RunbookRepository(BaseRepository):
             cur.execute(
                 """
                 INSERT INTO runbooks
-                    (id, title, symptoms, service, tags, embedding)
+                    (id, project, title, symptoms, service, tags, embedding)
                 VALUES
-                    (%s, %s, %s, %s, %s, %s::VECTOR(1024))
+                    (%s, %s, %s, %s, %s, %s, %s::VECTOR(1024))
                 """,
-                (id, title, symptoms, service, tags, vec_literal(embedding)),
+                (id, self.project, title, symptoms, service, tags, vec_literal(embedding)),
             )
             for step in steps or []:
                 self._insert_step(
@@ -118,11 +118,11 @@ class RunbookRepository(BaseRepository):
                 SELECT id, title, symptoms, service, tags, created_at,
                        embedding <-> %s::VECTOR(1024) AS distance
                 FROM runbooks
-                WHERE embedding IS NOT NULL
+                WHERE embedding IS NOT NULL AND project = %s
                 ORDER BY distance
                 LIMIT %s
                 """,
-                (vec_literal(query_vec), k),
+                (vec_literal(query_vec), self.project, k),
             )
             rows = cur.fetchall()
         recalls = [

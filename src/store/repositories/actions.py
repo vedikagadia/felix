@@ -30,9 +30,9 @@ class ActionRepository(BaseRepository):
             cur.execute(
                 """
                 INSERT INTO agent_actions
-                    (action_type, tool_called, input, output, model, tokens)
+                    (project, action_type, tool_called, input, output, model, tokens)
                 VALUES
-                    (%s, %s, %s, %s, %s, %s)
+                    (%s, %s, %s, %s, %s, %s, %s)
                 """,
-                (action_type, tool_called, input_json, output_json, model, tokens),
+                (self.project, action_type, tool_called, input_json, output_json, model, tokens),
             )

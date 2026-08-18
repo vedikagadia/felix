@@ -65,15 +65,21 @@ def _load_json(path: Path) -> Any:
 
 
 class Seeder:
-    def __init__(self, conn: psycopg.Connection, embedder: Embedder | None = None):
+    def __init__(
+        self,
+        conn: psycopg.Connection,
+        embedder: Embedder | None = None,
+        project: str = "sample",
+    ):
         self.conn = conn
         self.embedder = embedder or get_embedder()
-        self.incidents = IncidentRepository(conn)
-        self.docs = DocRepository(conn)
-        self.changes = ChangeRepository(conn)
-        self.graph = GraphRepository(conn)
-        self.topology = TopologyRepository(conn)
-        self.runbooks = RunbookRepository(conn)
+        self.project = project
+        self.incidents = IncidentRepository(conn, project)
+        self.docs = DocRepository(conn, project)
+        self.changes = ChangeRepository(conn, project)
+        self.graph = GraphRepository(conn, project)
+        self.topology = TopologyRepository(conn, project)
+        self.runbooks = RunbookRepository(conn, project)
 
     # ── individual loaders ────────────────────────────────────────────────────
 
@@ -190,13 +196,15 @@ class Seeder:
         return len(rows)
 
     def truncate(self) -> None:
-        """Clear the seeded tables (not code_nodes/edges — those UPSERT cleanly)."""
+        """Clear THIS project's seeded tables (not code_nodes/edges — those UPSERT
+        cleanly). Scoped to `self.project` so re-seeding the demo never wipes an
+        onboarded project's memory."""
         with self.conn.cursor() as cur:
             # resolution_steps cascades from incidents; runbook_steps from runbooks
-            cur.execute("DELETE FROM incidents")
-            cur.execute("DELETE FROM doc_chunks")
-            cur.execute("DELETE FROM code_changes")
-            cur.execute("DELETE FROM runbooks")
+            cur.execute("DELETE FROM incidents WHERE project = %s", (self.project,))
+            cur.execute("DELETE FROM doc_chunks WHERE project = %s", (self.project,))
+            cur.execute("DELETE FROM code_changes WHERE project = %s", (self.project,))
+            cur.execute("DELETE FROM runbooks WHERE project = %s", (self.project,))
 
     def seed_all(self, truncate: bool = False) -> dict[str, int]:
         """Full seed run against this Seeder's connection. Returns per-source counts."""

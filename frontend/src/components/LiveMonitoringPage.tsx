@@ -82,7 +82,15 @@ function tripAlertText(
   );
 }
 
-export function LiveMonitoringPage({ onAskFelix }: { onAskFelix?: (alert: string) => void }) {
+export function LiveMonitoringPage({
+  onAskFelix,
+  project = "sample",
+}: {
+  onAskFelix?: (alert: string) => void;
+  /** The active project slug — shown in the "send your own metrics" how-to so
+   * the snippets write telemetry into this project's namespace. */
+  project?: string;
+}) {
   // series[key] = chronological samples for that (service, metric).
   const [series, setSeries] = useState<Record<string, MetricSample[]>>({});
   const [config, setConfig] = useState<MetricConfig>({ default_p99_ms: 1000, thresholds: {} });
@@ -152,6 +160,8 @@ export function LiveMonitoringPage({ onAskFelix }: { onAskFelix?: (alert: string
           Triage tab when its tail latency trips.
         </p>
       </div>
+
+      <MetricsHelpCard project={project} hasData={keys.length > 0} />
 
       {error && <div className="error live__error">Couldn’t load metrics: {error}</div>}
       {loading && !error && <div className="live__status">Connecting to the metric stream…</div>}
@@ -281,6 +291,80 @@ function MetricCard({
         </p>
       )}
     </article>
+  );
+}
+
+/**
+ * "Send your own metrics" how-to. Live monitoring is PUSH-based: felix never
+ * scrapes a service — the operator instruments their own code to write into the
+ * shared `metrics` table (the panel tails a CHANGEFEED over it). This card shows
+ * the two ways to do that, scoped to the active project's slug. Especially
+ * relevant after onboarding a new project, whose services emit nothing yet.
+ */
+function MetricsHelpCard({ project, hasData }: { project: string; hasData: boolean }) {
+  // Auto-expand when there's nothing on the feed yet (a freshly onboarded
+  // project, or before the sample traffic runs) — that's when it's most needed.
+  const [open, setOpen] = useState(!hasData);
+
+  const probeSnippet = `from src.monitoring.probe import Probe
+from src.store.repositories import MetricRepository
+from src.store.connection import get_conn
+
+conn = get_conn()
+probe = Probe.for_repo(MetricRepository(conn, ${JSON.stringify(project)}))
+
+# Every call records one measured sample → a card appears automatically.
+@probe.timed("your-service", "request_latency_ms")
+def handle_request(...):
+    ...`;
+
+  const sqlSnippet = `INSERT INTO metrics (project, service, metric, value, labels)
+VALUES (${JSON.stringify(project)}, 'your-service', 'request_latency_ms', 142.0, '{"ok": true}');`;
+
+  return (
+    <section className={`metrichelp ${open ? "is-open" : ""}`}>
+      <button
+        type="button"
+        className="metrichelp__toggle"
+        aria-expanded={open}
+        onClick={() => setOpen((v) => !v)}
+      >
+        <span className={`card__chev ${open ? "is-open" : ""}`} aria-hidden>
+          ▸
+        </span>
+        Send your own metrics
+        <span className="metrichelp__scope">
+          project <code>{project}</code>
+        </span>
+      </button>
+
+      {open && (
+        <div className="metrichelp__body">
+          <p>
+            Live monitoring is <strong>push-based</strong> — felix doesn’t scrape your services.
+            Instrument your code to write into the shared <code>metrics</code> table (the panel
+            tails a CockroachDB CHANGEFEED over it), tagging each row with this project’s slug.
+            Any new <code>(service, metric)</code> that appears gets its own card automatically.
+          </p>
+
+          <h5>1 · Attach the timing probe (Python)</h5>
+          <pre className="metrichelp__code">
+            <code>{probeSnippet}</code>
+          </pre>
+
+          <h5>2 · …or insert a sample directly (any client)</h5>
+          <pre className="metrichelp__code">
+            <code>{sqlSnippet}</code>
+          </pre>
+
+          <p className="metrichelp__foot">
+            <code>value</code> is the measurement (ms for a <code>*_latency_ms</code> metric);
+            <code>labels</code> is optional JSON. Set an alert level per card below — a p99 breach
+            trips felix’s auto-triage.
+          </p>
+        </div>
+      )}
+    </section>
   );
 }
 

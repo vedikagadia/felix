@@ -57,11 +57,12 @@ class TopologyHealthService:
         conn: psycopg.Connection,
         settings: Settings | None = None,
         query: MetricQueryBuilder | None = None,
+        project: str = "sample",
     ) -> None:
-        self.topology = TopologyRepository(conn)
+        self.topology = TopologyRepository(conn, project)
         # MetricQueryBuilder is a thin wrapper over the metric repo; injectable
         # so a pure test can hand in a builder over a fake repo.
-        self.query = query or MetricQueryBuilder(MetricRepository(conn))
+        self.query = query or MetricQueryBuilder(MetricRepository(conn, project))
         self.settings = settings or get_settings()
 
     # ── service extraction ────────────────────────────────────────────────────

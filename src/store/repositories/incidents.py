@@ -60,12 +60,13 @@ class IncidentRepository(BaseRepository):
             cur.execute(
                 """
                 INSERT INTO incidents
-                    (id, title, symptoms, root_cause, service, severity, tags, occurred_at, embedding)
+                    (id, project, title, symptoms, root_cause, service, severity, tags, occurred_at, embedding)
                 VALUES
-                    (%s, %s, %s, %s, %s, %s, %s, %s, %s::VECTOR(1024))
+                    (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s::VECTOR(1024))
                 """,
                 (
                     id,
+                    self.project,
                     title,
                     symptoms,
                     root_cause,
@@ -110,11 +111,11 @@ class IncidentRepository(BaseRepository):
         with self.conn.cursor() as cur:
             cur.execute(
                 """
-                INSERT INTO incidents (title, symptoms, root_cause, service, severity)
-                VALUES (%s, %s, %s, %s, %s)
+                INSERT INTO incidents (project, title, symptoms, root_cause, service, severity)
+                VALUES (%s, %s, %s, %s, %s, %s)
                 RETURNING id
                 """,
-                (title, symptoms, root_cause, service, severity),
+                (self.project, title, symptoms, root_cause, service, severity),
             )
             row = cur.fetchone()
         return str(row[0])
@@ -139,18 +140,22 @@ class IncidentRepository(BaseRepository):
                     """
                     UPDATE incidents
                     SET feedback = 'helpful', embedding = %s::VECTOR(1024)
-                    WHERE id = %s
+                    WHERE id = %s AND project = %s
                     """,
-                    (vec_literal(embedding) if embedding is not None else None, incident_id),
+                    (
+                        vec_literal(embedding) if embedding is not None else None,
+                        incident_id,
+                        self.project,
+                    ),
                 )
             else:
                 cur.execute(
                     """
                     UPDATE incidents
                     SET feedback = 'not_helpful', embedding = NULL
-                    WHERE id = %s
+                    WHERE id = %s AND project = %s
                     """,
-                    (incident_id,),
+                    (incident_id, self.project),
                 )
             return cur.rowcount > 0
 
@@ -176,9 +181,9 @@ class IncidentRepository(BaseRepository):
                 """
                 SELECT id, title, symptoms, root_cause, service, severity, feedback
                 FROM incidents
-                WHERE id = %s
+                WHERE id = %s AND project = %s
                 """,
-                (incident_id,),
+                (incident_id, self.project),
             )
             row = cur.fetchone()
             if row is None:
@@ -259,10 +264,11 @@ class IncidentRepository(BaseRepository):
                 """
                 SELECT id, title, symptoms, root_cause, service, severity, tags, occurred_at, feedback
                 FROM incidents
+                WHERE project = %s
                 ORDER BY occurred_at DESC NULLS LAST, created_at DESC
                 LIMIT %s
                 """,
-                (limit,),
+                (self.project, limit),
             )
             rows = cur.fetchall()
         incidents = [self._row_to_incident(r) for r in rows]
@@ -281,11 +287,11 @@ class IncidentRepository(BaseRepository):
                 SELECT id, title, symptoms, root_cause, service, severity, tags, occurred_at, feedback,
                        embedding <-> %s::VECTOR(1024) AS distance
                 FROM incidents
-                WHERE embedding IS NOT NULL
+                WHERE embedding IS NOT NULL AND project = %s
                 ORDER BY distance
                 LIMIT %s
                 """,
-                (vec_literal(query_vec), k),
+                (vec_literal(query_vec), self.project, k),
             )
             rows = cur.fetchall()
         recalls = [Recall(item=self._row_to_incident(r), distance=float(r[9])) for r in rows]
@@ -302,10 +308,11 @@ class IncidentRepository(BaseRepository):
                 SELECT id, title, severity, symptoms, root_cause, service,
                        embedding <-> %s::VECTOR(1024) AS distance
                 FROM incidents
+                WHERE project = %s
                 ORDER BY distance
                 LIMIT %s
                 """,
-                (vec_literal(query_vec), k),
+                (vec_literal(query_vec), self.project, k),
             )
             rows = cur.fetchall()
         return [

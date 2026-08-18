@@ -34,3 +34,6 @@ demo/out/
 
 # Cached CockroachDB MCP OAuth tokens (local only)
 .crdb-mcp-tokens.json
+
+# Onboarded projects' git clones (regenerable via `python -m src onboard`)
+.felix-projects/

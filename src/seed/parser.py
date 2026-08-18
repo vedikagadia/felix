@@ -1,12 +1,20 @@
-"""AST-based parser that turns the `checkout_service` sample project into a code graph.
+"""AST-based parser that turns a Python project into a code graph.
 
-Walks every `.py` file in `sample_project/checkout_service/`, and for each module,
-class, and function/method emits a `code_nodes`-shaped dict (per `sql/schema.sql`)
-plus best-effort `code_edges` dicts for `imports` and `calls` relationships.
+For each module, class, and function/method it emits a `code_nodes`-shaped dict
+(per `sql/schema.sql`) plus best-effort `code_edges` dicts for `imports` and
+`calls` relationships. Two entry points share one core (`_build_graph`):
 
-Stdlib only (`ast`, `uuid`, `pathlib`). Pure parse — no DB connection, no
-embedding, no network calls. Imported by the loader via `parse_project()`;
-running this file directly prints a human-readable summary.
+- `parse_project(root)` — the built-in `checkout_service` sample (top-level
+  package glob; files reported as `sample_project/checkout_service/<name>.py`).
+- `parse_python_project(root, project, service)` — an ARBITRARY onboarded repo:
+  a recursive `.py` walk rooted at the project directory (root-relative file
+  paths), skipping vendor/build noise and tolerating unparseable files.
+
+Node ids are `uuid5(project:service:file:kind:qualname)` — folding `project`
+in namespaces the graph per tenant, so two onboarded projects can't collide and
+re-syncing one upserts in place. Stdlib only (`ast`, `uuid`, `pathlib`): pure
+parse — no DB connection, no embedding, no network, and the target code is never
+imported or executed.
 """
 
 from __future__ import annotations
@@ -18,15 +26,29 @@ from pathlib import Path
 # Fixed namespace so uuid5-derived node ids are stable across re-runs.
 NAMESPACE = uuid.UUID("6f6a6e46-2c1a-4b8b-9a3d-2f6e6b7d9c11")
 
+# The built-in demo's identifiers (parse_project's defaults).
 SERVICE_NAME = "checkout-service"
 PACKAGE_NAME = "checkout_service"
+SAMPLE_PROJECT = "sample"
+
+# Directories never worth walking in an arbitrary repo (vendored deps, VCS
+# metadata, build artifacts, virtualenvs, tool caches).
+SKIP_DIRS = frozenset(
+    {
+        ".git", ".hg", ".svn",
+        "__pycache__", ".mypy_cache", ".pytest_cache", ".ruff_cache",
+        ".venv", "venv", "env", ".env", "virtualenv",
+        "node_modules", "site-packages", ".eggs", ".tox", ".nox",
+        "build", "dist", ".next", ".cache",
+    }
+)
 
 
 # ── small helpers ────────────────────────────────────────────────────────────
 
 
-def _node_id(service: str, file: str, kind: str, qualified_name: str) -> str:
-    return str(uuid.uuid5(NAMESPACE, f"{service}:{file}:{kind}:{qualified_name}"))
+def _node_id(project: str, service: str, file: str, kind: str, qualified_name: str) -> str:
+    return str(uuid.uuid5(NAMESPACE, f"{project}:{service}:{file}:{kind}:{qualified_name}"))
 
 
 def _docstring_summary(node: ast.AST) -> str | None:
@@ -56,40 +78,98 @@ class _Module:
         self.source = source
 
 
-def _discover_modules(package_dir: Path, base_dir: Path) -> list[_Module]:
+def _discover_package(package_dir: Path, base_dir: Path, package_name: str) -> list[_Module]:
+    """Top-level `.py` files of one package (the sample-project layout)."""
     modules = []
     for py_file in sorted(package_dir.glob("*.py")):
         source = py_file.read_text()
         tree = ast.parse(source, filename=str(py_file))
         stem = py_file.stem
-        module_name = PACKAGE_NAME if stem == "__init__" else f"{PACKAGE_NAME}.{stem}"
+        module_name = package_name if stem == "__init__" else f"{package_name}.{stem}"
         rel_file = str(py_file.relative_to(base_dir))
         modules.append(_Module(module_name, py_file, rel_file, tree, source))
     return modules
 
 
-# ── main parse ────────────────────────────────────────────────────────────────
+def _discover_recursive(root: Path, max_files: int | None = None) -> list[_Module]:
+    """Every `.py` file under `root`, recursively — the arbitrary-repo path.
+
+    Skips vendor/build/VCS noise (`SKIP_DIRS`) and tolerates files that can't be
+    read or parsed (binary-ish, non-utf8, Python 2, syntax errors): those are
+    simply omitted rather than aborting the whole ingest. Module names are the
+    dotted relative path (``pkg/sub/mod.py`` -> ``pkg.sub.mod``; a package
+    ``__init__.py`` collapses to its directory)."""
+    modules: list[_Module] = []
+    for py_file in sorted(root.rglob("*.py")):
+        rel = py_file.relative_to(root)
+        if any(part in SKIP_DIRS for part in rel.parts):
+            continue
+        try:
+            source = py_file.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue  # binary/unreadable — skip
+        try:
+            tree = ast.parse(source, filename=str(py_file))
+        except SyntaxError:
+            continue  # Python 2 / broken file — skip
+        parts = list(rel.with_suffix("").parts)
+        if parts and parts[-1] == "__init__":
+            parts = parts[:-1]
+        module_name = ".".join(parts) if parts else py_file.stem
+        modules.append(_Module(module_name, py_file, str(rel), tree, source))
+        if max_files is not None and len(modules) >= max_files:
+            break
+    return modules
 
 
-def parse_project(root: str) -> tuple[list[dict], list[dict]]:
+# ── public entry points ────────────────────────────────────────────────────────
+
+
+def parse_project(root: str, *, project: str = SAMPLE_PROJECT) -> tuple[list[dict], list[dict]]:
     """Parse the `checkout_service` package under `root` into (nodes, edges).
 
     `root` is the path to the directory that *contains* `checkout_service/`
     (i.e. the `sample_project` directory), so emitted `file` paths come out as
-    `sample_project/checkout_service/<name>.py`.
+    `sample_project/checkout_service/<name>.py`. Backward-compatible entry for
+    the built-in demo; arbitrary repos use `parse_python_project`.
     """
     root_path = Path(root).resolve()
     package_dir = root_path / PACKAGE_NAME
     base_dir = root_path.parent  # so rel_file includes "sample_project/..."
+    modules = _discover_package(package_dir, base_dir, PACKAGE_NAME)
+    return _build_graph(modules, project=project, service=SERVICE_NAME)
 
-    modules = _discover_modules(package_dir, base_dir)
+
+def parse_python_project(
+    root: str,
+    *,
+    project: str,
+    service: str,
+    max_files: int | None = None,
+) -> tuple[list[dict], list[dict]]:
+    """Parse an ARBITRARY Python repo rooted at `root` into (nodes, edges).
+
+    Recursively walks `*.py` (root-relative file paths), scoping every node id
+    to `project`/`service` so onboarded repos never collide with each other or
+    the demo. `max_files` bounds very large repos (None = unbounded).
+    """
+    root_path = Path(root).resolve()
+    modules = _discover_recursive(root_path, max_files=max_files)
+    return _build_graph(modules, project=project, service=service)
+
+
+# ── core graph builder ─────────────────────────────────────────────────────────
+
+
+def _build_graph(modules: list[_Module], *, project: str, service: str) -> tuple[list[dict], list[dict]]:
+    """Turn discovered modules into (nodes, edges). Shared by both entry points."""
     module_by_name = {m.module_name: m for m in modules}
 
     nodes: list[dict] = []
 
-    # registries used for best-effort call resolution. Names happen to be
-    # unique across this small project, so we key globally rather than
-    # per-module (documented limitation — see report).
+    # registries used for best-effort call resolution. Names are keyed globally
+    # (not per-module); across a small project they're unique. In a large repo
+    # collisions can mis-resolve a call edge — a documented best-effort limit.
     classes: dict[str, dict] = {}      # class name -> {id, qualname, module, file, node}
     functions: dict[str, dict] = {}    # function name -> {id, qualname, module, file, node, return_type}
     methods: dict[str, dict] = {}      # "Class.method" -> {id, qualname, module, file, node, class, return_type}
@@ -98,11 +178,11 @@ def parse_project(root: str) -> tuple[list[dict], list[dict]]:
     # ── pass 1: build module/class/function/method nodes ────────────────────
     for m in modules:
         mod_node = {
-            "id": _node_id(SERVICE_NAME, m.rel_file, "module", m.module_name),
+            "id": _node_id(project, service, m.rel_file, "module", m.module_name),
             "name": m.module_name,
             "kind": "module",
             "file": m.rel_file,
-            "service": SERVICE_NAME,
+            "service": service,
             "source": m.source,
             "summary": _docstring_summary(m.tree),
             "last_commit": None,
@@ -113,13 +193,13 @@ def parse_project(root: str) -> tuple[list[dict], list[dict]]:
         for stmt in m.tree.body:
             if isinstance(stmt, ast.ClassDef):
                 cls_qualname = stmt.name
-                cls_id = _node_id(SERVICE_NAME, m.rel_file, "class", cls_qualname)
+                cls_id = _node_id(project, service, m.rel_file, "class", cls_qualname)
                 cls_node = {
                     "id": cls_id,
                     "name": cls_qualname,
                     "kind": "class",
                     "file": m.rel_file,
-                    "service": SERVICE_NAME,
+                    "service": service,
                     "source": ast.get_source_segment(m.source, stmt),
                     "summary": _docstring_summary(stmt),
                     "last_commit": None,
@@ -136,13 +216,13 @@ def parse_project(root: str) -> tuple[list[dict], list[dict]]:
                 for sub in stmt.body:
                     if isinstance(sub, (ast.FunctionDef, ast.AsyncFunctionDef)):
                         method_qualname = f"{stmt.name}.{sub.name}"
-                        method_id = _node_id(SERVICE_NAME, m.rel_file, "function", method_qualname)
+                        method_id = _node_id(project, service, m.rel_file, "function", method_qualname)
                         method_node = {
                             "id": method_id,
                             "name": method_qualname,
                             "kind": "function",
                             "file": m.rel_file,
-                            "service": SERVICE_NAME,
+                            "service": service,
                             "source": ast.get_source_segment(m.source, sub),
                             "summary": _docstring_summary(sub),
                             "last_commit": None,
@@ -160,13 +240,13 @@ def parse_project(root: str) -> tuple[list[dict], list[dict]]:
 
             elif isinstance(stmt, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 func_qualname = stmt.name
-                func_id = _node_id(SERVICE_NAME, m.rel_file, "function", func_qualname)
+                func_id = _node_id(project, service, m.rel_file, "function", func_qualname)
                 func_node = {
                     "id": func_id,
                     "name": func_qualname,
                     "kind": "function",
                     "file": m.rel_file,
-                    "service": SERVICE_NAME,
+                    "service": service,
                     "source": ast.get_source_segment(m.source, stmt),
                     "summary": _docstring_summary(stmt),
                     "last_commit": None,

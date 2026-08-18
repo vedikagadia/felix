@@ -50,6 +50,7 @@ class MetricWatcher:
         stream_conn: psycopg.Connection,
         metric_repo: MetricRepository,
         diagnoser: IncidentDiagnoser,
+        project: str = "sample",
     ):
         # `stream_conn` holds the changefeed's server-side streaming portal and
         # does NOTHING else: psycopg forbids a second operation on a connection
@@ -59,6 +60,10 @@ class MetricWatcher:
         self.stream_conn = stream_conn
         self.metric_repo = metric_repo
         self.diagnoser = diagnoser
+        # The changefeed is cluster-wide (all projects' metrics); this watcher
+        # observes only its own project's rows so a pushed metric from another
+        # tenant is never diagnosed against this project's memory.
+        self.project = project
         self._windows: dict[tuple[str, str], deque[float]] = {}
         # origin_nodes we've already fired a diagnosis for this process — an
         # in-memory fast path over the authoritative DB cooldown (see _fire).
@@ -102,6 +107,8 @@ class MetricWatcher:
         payload = json.loads(row[2].decode())
         after = payload.get("after")
         if after is None:  # a delete — we only INSERT, so nothing to observe
+            return
+        if after.get("project", "sample") != self.project:  # another tenant's metric
             return
         service = after["service"]
         metric = after["metric"]
@@ -155,8 +162,9 @@ class MetricWatcher:
                 """
                 SELECT count(*) FROM active_incidents
                 WHERE status = 'open' AND source = 'cdc' AND origin_node = %s
+                  AND project = %s
                 """,
-                (origin_node,),
+                (origin_node, self.project),
             )
             return int(cur.fetchone()[0])
 

@@ -24,6 +24,7 @@ import {
   mockSearchIncidents,
   mockSubmitFeedback,
 } from "./mock";
+import { appendProject } from "./projects";
 
 const API_URL = import.meta.env.VITE_API_URL as string | undefined;
 const FORCE_MOCK = import.meta.env.VITE_USE_MOCK === "true";
@@ -47,7 +48,7 @@ export async function sendChat(req: ChatRequest): Promise<ChatResponse> {
 
   let res: Response;
   try {
-    res = await fetch(`${API_URL}/chat`, {
+    res = await fetch(appendProject(`${API_URL}/chat`), {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(req),
@@ -86,7 +87,7 @@ export async function sendChatStream(req: ChatRequest, handlers: StreamHandlers)
 
   let res: Response;
   try {
-    res = await fetch(`${API_URL}/chat/stream`, {
+    res = await fetch(appendProject(`${API_URL}/chat/stream`), {
       method: "POST",
       headers: { "Content-Type": "application/json", Accept: "text/event-stream" },
       body: JSON.stringify(req),
@@ -140,7 +141,7 @@ export async function sendChatStream(req: ChatRequest, handlers: StreamHandlers)
 export async function listIncidents(limit = 200): Promise<IncidentHit[]> {
   if (usingMock) return mockListIncidents();
 
-  const res = await fetch(`${API_URL}/incidents?limit=${limit}`);
+  const res = await fetch(appendProject(`${API_URL}/incidents?limit=${limit}`));
   if (!res.ok) {
     throw new ApiError(`Backend returned ${res.status} ${res.statusText}`, res.status);
   }
@@ -152,7 +153,7 @@ export async function listIncidents(limit = 200): Promise<IncidentHit[]> {
 export async function searchIncidents(q: string, k = 12): Promise<IncidentHit[]> {
   if (usingMock) return mockSearchIncidents(q);
 
-  const res = await fetch(`${API_URL}/incidents/search?q=${encodeURIComponent(q)}&k=${k}`);
+  const res = await fetch(appendProject(`${API_URL}/incidents/search?q=${encodeURIComponent(q)}&k=${k}`));
   if (!res.ok) {
     throw new ApiError(`Backend returned ${res.status} ${res.statusText}`, res.status);
   }
@@ -168,7 +169,7 @@ export async function searchIncidents(q: string, k = 12): Promise<IncidentHit[]>
 export async function submitFeedback(incidentId: string, helpful: boolean): Promise<FeedbackResponse> {
   if (usingMock) return mockSubmitFeedback(incidentId, helpful);
 
-  const res = await fetch(`${API_URL}/incidents/${encodeURIComponent(incidentId)}/feedback`, {
+  const res = await fetch(appendProject(`${API_URL}/incidents/${encodeURIComponent(incidentId)}/feedback`), {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ helpful }),
