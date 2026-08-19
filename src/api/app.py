@@ -282,14 +282,14 @@ def create_app() -> FastAPI:
         return {"incidents": [{"item": incident_to_dict(i), "distance": None} for i in rows]}
 
     @app.get("/incidents/search")
- def search_incidents(
-          q: str = Query(..., min_length=1, max_length=8000),
-          k: int = 10,
-          project: str = "sample",
-          conn=Depends(db_conn),
-      ) -> dict:
-          """Semantic search over `project`'s incident library — embeds `q` and
-          ranks incidents by CockroachDB VECTOR distance (the showcase). Returns
+    def search_incidents(
+        q: str = Query(..., min_length=1, max_length=8000),
+        k: int = 10,
+        project: str = "sample",
+        conn=Depends(db_conn),
+    ) -> dict:
+        """Semantic search over `project`'s incident library — embeds `q` and
+        ranks incidents by CockroachDB VECTOR distance (the showcase). Returns
         {"query", "incidents": [{item, distance}]} sorted nearest-first."""
         from ..clients.embedder import get_embedder
         from ..store.repositories import IncidentRepository
