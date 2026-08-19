@@ -61,6 +61,10 @@ LLM_PROVIDER=gemini
 # Reasoning (the /chat path) needs a key: https://aistudio.google.com/apikey
 GEMINI_API_KEY=
 GEMINI_MODEL_ID=gemini-flash-latest
+# Run the CDC watcher + sample-traffic driver in-process (same as the deploy),
+# so Live monitoring has data and the anomaly→auto-triage path is live locally.
+FELIX_RUN_WATCHER=1
+FELIX_RUN_SAMPLE=1
 ENV
   info "wrote a local-dev .env"
 else
@@ -83,6 +87,14 @@ info "frontend ready"
 
 # --- 4. Launch backend + frontend ----------------------------------------------
 step "Starting the app"
+
+# Run the CDC watcher + sample-traffic driver in-process (matches the deploy),
+# so Live monitoring has data and the anomaly→auto-triage path is live. Exported
+# here too — not just in the generated .env — so it applies even when a .env
+# from an earlier run already exists (load_dotenv won't override the shell env).
+export FELIX_RUN_WATCHER=1
+export FELIX_RUN_SAMPLE=1
+
 pids=()
 cleanup() {
   echo

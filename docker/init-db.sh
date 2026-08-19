@@ -30,7 +30,7 @@ rows=$(sql --database=felix --format=csv -e "SELECT count(*) FROM incidents" | t
 if [ "$rows" = "0" ]; then
   echo "[init] incidents table empty — seeding from sql/seed_dump.sql ..."
   sql --database=felix -f /sql/seed_dump.sql
-  echo "[init] seed complete (154 rows incl. precomputed embeddings)."
+  echo "[init] seed complete (incl. precomputed embeddings)."
 else
   echo "[init] incidents already has $rows row(s) — skipping seed."
 fi
